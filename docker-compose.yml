@@ -1,0 +1,26 @@
+# Secrets live in .env and/or secrets/redmine-keys.json on the host.
+# MCP clients connect via SSE URL (+ optional X-Redmine-Profile header) only —
+# never put REDMINE_API_KEY / REDMINE_API_KEYS in mcp.json.
+services:
+  mcp-redmine:
+    build: .
+    image: mcp-redmine:local
+    env_file:
+      - .env
+    environment:
+      MCP_BIND: "0.0.0.0"
+      MCP_PORT: "8080"
+      REDMINE_API_KEYS_FILE: /secrets/redmine-keys.json
+    volumes:
+      - ./secrets/redmine-keys.json:/secrets/redmine-keys.json
+    ports:
+      # Host 3100 → container 8080 (8080 is taken by GitBucket on this machine)
+      # Bind all interfaces so LAN clients can reach SSE / health
+      - "0.0.0.0:3100:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

@@ -1,0 +1,5 @@
+target/
+.env
+secrets/
+*.pem
+.DS_Store

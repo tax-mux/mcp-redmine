@@ -1,0 +1,22 @@
+[package]
+name = "mcp-redmine"
+version = "0.2.0"
+edition = "2021"
+description = "Redmine REST API MCP server over SSE (Docker; API key stays in-container)"
+license = "MIT"
+
+[dependencies]
+axum = "0.8"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1"

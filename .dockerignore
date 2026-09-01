@@ -1,0 +1,7 @@
+target
+.git
+.env
+*.md
+examples
+scripts
+.dockerignore
