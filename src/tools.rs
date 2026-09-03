@@ -5,8 +5,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api_helpers::{
-    issue_body_from_args, known_projects_fallback, normalize_issue_api_request, projects_list_needs_fallback,
-    validate_redmine_path, ApiErrorContext,
+    coerce_api_body, issue_body_from_args, known_projects_fallback, normalize_issue_api_request,
+    normalize_status_filter_value, projects_list_needs_fallback, resolve_api_method,
+    resolve_issue_id_arg, sanitize_issue_include, validate_redmine_path, ApiErrorContext,
 };
 use crate::compact::{is_list_collection_get, strip_list_bodies};
 use crate::error::{McpError, RedmineError};
@@ -74,7 +75,7 @@ pub fn all_tool_definitions() -> Value {
         },
         {
             "name": TOOL_ISSUES,
-            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on, no description). create/update use flat arguments; MCP wraps {issue:{...}}. Never pass credentials as arguments.",
+            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on, no description). create/update accept flat args or nested issue object/JSON string; MCP wraps {issue:{...}}. For journals use notes on update (not description). Never pass credentials as arguments.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -83,7 +84,10 @@ pub fn all_tool_definitions() -> Value {
                         "enum": ["list", "get", "create", "update"],
                         "description": "list, get, create, or update"
                     },
-                    "issue_id": { "type": "string", "description": "Required for get and update" },
+                    "issue_id": {
+                        "type": ["string", "integer"],
+                        "description": "Required for get and update. Also accepts top-level id or query.id. Do not wrap the id in quotes."
+                    },
                     "include": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -99,7 +103,8 @@ pub fn all_tool_definitions() -> Value {
                     "tracker_id": { "type": "integer", "description": "Tracker ID (required for create)" },
                     "status_id": { "type": "integer", "description": "Status ID (required for create, optional for update)" },
                     "subject": { "type": "string", "description": "Issue subject (required for create)" },
-                    "description": { "type": "string", "description": "Issue description (required for create)" },
+                    "description": { "type": "string", "description": "Issue description body (required for create; overwrites body on update)" },
+                    "notes": { "type": "string", "description": "Journal note for update (does not replace description)" },
                     "profile": profile_property()
                 },
                 "required": ["action"],
@@ -143,13 +148,13 @@ pub fn all_tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] },
+                    "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], "description": "HTTP method (default GET if omitted)" },
                     "path": { "type": "string", "description": "REST path, e.g. /projects.json" },
                     "query": { "type": "object", "additionalProperties": { "type": "string" } },
                     "body": { "type": "object" },
                     "profile": profile_property()
                 },
-                "required": ["method", "path"],
+                "required": ["path"],
                 "additionalProperties": false
             }
         },
@@ -460,6 +465,9 @@ pub async fn dispatch_tool(
                     } else {
                         q.entry("limit".into()).or_insert_with(|| "25".into());
                     }
+                    if let Some(status) = q.get("status_id").cloned() {
+                        q.insert("status_id".into(), normalize_status_filter_value(&status));
+                    }
                     let mut listed = client_request(
                         &client,
                         profile_ref,
@@ -473,25 +481,11 @@ pub async fn dispatch_tool(
                     listed
                 }
                 "get" => {
-                    let id = args
-                        .get("issue_id")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| McpError::InvalidArgs("issue_id required for get".into()))?;
-                    let include = args.get("include").and_then(|v| {
-                        if let Value::Array(arr) = v {
-                            let parts: Vec<&str> = arr.iter().filter_map(|x| x.as_str()).collect();
-                            if parts.is_empty() {
-                                None
-                            } else {
-                                Some(parts.join(","))
-                            }
-                        } else {
-                            v.as_str().map(|s| s.to_string())
-                        }
-                    });
+                    let id = resolve_issue_id_arg(&args)?;
+                    let include = sanitize_issue_include(args.get("include"));
                     let mut q = HashMap::new();
-                    if let Some(inc) = include.as_deref() {
-                        q.insert("include".into(), inc.to_string());
+                    if let Some(inc) = include {
+                        q.insert("include".into(), inc);
                     }
                     client_request(
                         &client,
@@ -516,10 +510,7 @@ pub async fn dispatch_tool(
                     .await?
                 }
                 "update" => {
-                    let id = args
-                        .get("issue_id")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| McpError::InvalidArgs("issue_id required for update".into()))?;
+                    let id = resolve_issue_id_arg(&args)?;
                     let body = issue_body_from_args(&args, false)?;
                     client_request(
                         &client,
@@ -531,6 +522,11 @@ pub async fn dispatch_tool(
                     )
                     .await?
                 }
+                "delete" => {
+                    return Err(McpError::InvalidArgs(
+                        "redmine_issues does not support action=delete. Use redmine_api_request with method=DELETE and path=/issues/{id}.json".into(),
+                    ));
+                }
                 other => {
                     return Err(McpError::InvalidArgs(format!(
                         "Unsupported issues action: {other} (use list, get, create, or update)"
@@ -539,29 +535,30 @@ pub async fn dispatch_tool(
             }
         }
         TOOL_API_REQUEST => {
-            let method = args
-                .get("method")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| McpError::InvalidArgs("Missing method".into()))?;
+            let method = resolve_api_method(&args)?;
             let path_raw = args
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| McpError::InvalidArgs("Missing path".into()))?;
             let path = validate_redmine_path(path_raw)?;
             let mut q = query_map(args.get("query")).unwrap_or_default();
+            if let Some(status) = q.get("status_id").cloned() {
+                q.insert("status_id".into(), normalize_status_filter_value(&status));
+            }
+            let coerced = coerce_api_body(args.get("body"));
             let body =
-                normalize_issue_api_request(&path, method, args.get("body"), &mut q);
+                normalize_issue_api_request(&path, &method, coerced.as_ref(), &mut q);
             let q_ref = if q.is_empty() { None } else { Some(q) };
             let mut response = client_request(
                 &client,
                 profile_ref,
-                method,
+                &method,
                 &path,
                 q_ref.as_ref(),
                 body.as_ref(),
             )
             .await?;
-            if is_list_collection_get(method, &path) {
+            if is_list_collection_get(&method, &path) {
                 strip_list_bodies(&mut response);
                 if path.contains("/projects.json")
                     && projects_list_needs_fallback(&response, profile_ref)
@@ -761,6 +758,43 @@ mod tests {
             None,
         ));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn dispatch_delete_action_guides_to_api_request() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = test_store();
+        let err = rt.block_on(dispatch_tool(
+            TOOL_ISSUES,
+            json!({"action": "delete", "issue_id": "1"}),
+            store.clone(),
+            None,
+        ));
+        let guard = rt.block_on(store.lock());
+        let msg = safe_error_text(&err.unwrap_err(), &guard);
+        assert!(msg.contains("DELETE"), "{msg}");
+        assert!(msg.contains("/issues/"), "{msg}");
+    }
+
+    #[test]
+    fn dispatch_rejects_journals_api_path() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = test_store();
+        let err = rt.block_on(dispatch_tool(
+            TOOL_API_REQUEST,
+            json!({"path": "/issues/1/journals.json"}),
+            store.clone(),
+            None,
+        ));
+        let guard = rt.block_on(store.lock());
+        let msg = safe_error_text(&err.unwrap_err(), &guard);
+        assert!(msg.contains("include"), "{msg}");
     }
 
     #[test]

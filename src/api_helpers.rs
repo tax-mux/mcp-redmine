@@ -39,6 +39,14 @@ pub fn validate_redmine_path(path: &str) -> Result<String, McpError> {
         return Err(McpError::InvalidArgs("path must not contain ..".into()));
     }
 
+    // Agents invent /issues/N/journals.json; journals come from GET include=journals.
+    let bare_for_journals = path.trim_end_matches('/');
+    if bare_for_journals.contains("/journals") {
+        return Err(McpError::InvalidArgs(
+            "path must not include /journals. Use redmine_issues action=get with include=[\"journals\"] (e.g. issue_id + include journals), not /issues/:id/journals.json".into(),
+        ));
+    }
+
     const BLOCKED: &[&str] = &[
         "/home/",
         "/.config",
@@ -84,6 +92,165 @@ fn is_issue_update_path(path: &str) -> bool {
         return false;
     }
     bare.starts_with("/issues/") && bare.ends_with(".json")
+}
+
+/// Filter include values; drop non-Redmine tokens agents invent (e.g. "description").
+pub fn sanitize_issue_include(raw: Option<&Value>) -> Option<String> {
+    const ALLOWED: &[&str] = &[
+        "children",
+        "attachments",
+        "relations",
+        "changesets",
+        "journals",
+        "watchers",
+        "allowed_statuses",
+    ];
+    let Some(v) = raw else {
+        return None;
+    };
+    let parts: Vec<String> = match v {
+        Value::Array(arr) => arr
+            .iter()
+            .filter_map(|x| x.as_str())
+            .flat_map(|s| s.split(','))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Value::String(s) => s
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => return None,
+    };
+    let filtered: Vec<&str> = parts
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| ALLOWED.iter().any(|a| a.eq_ignore_ascii_case(s)))
+        .collect();
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered.join(","))
+    }
+}
+
+/// Map common status names to Redmine status ids. Leaves open/closed/* and numeric ids alone.
+pub fn normalize_status_filter_value(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() || t == "*" || t.eq_ignore_ascii_case("open") || t.eq_ignore_ascii_case("closed")
+    {
+        return t.to_string();
+    }
+    // comma-separated lists: normalize each token
+    if t.contains(',') {
+        return t
+            .split(',')
+            .map(|p| normalize_status_filter_value(p.trim()))
+            .collect::<Vec<_>>()
+            .join(",");
+    }
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        return t.to_string();
+    }
+    let lower = t.to_ascii_lowercase();
+    match lower.as_str() {
+        "new" => "1".into(),
+        "in_progress" | "in-progress" | "progress" => "2".into(),
+        "resolved" => "3".into(),
+        "feedback" => "4".into(),
+        "closed_status" | "done" => "5".into(),
+        "rejected" => "6".into(),
+        _ => match t {
+            "新規" => "1".into(),
+            "進行中" => "2".into(),
+            "解決" => "3".into(),
+            "フィードバック" => "4".into(),
+            "終了" => "5".into(),
+            "却下" => "6".into(),
+            _ => t.to_string(),
+        },
+    }
+}
+
+/// Parse api_request body when agents stringify JSON.
+pub fn coerce_api_body(body: Option<&Value>) -> Option<Value> {
+    let Some(body) = body else {
+        return None;
+    };
+    match body {
+        Value::String(s) => serde_json::from_str(s).ok().or_else(|| Some(body.clone())),
+        other => Some(other.clone()),
+    }
+}
+
+/// Default method to GET when agents omit it (common in logs).
+pub fn resolve_api_method(args: &Value) -> Result<String, McpError> {
+    match args.get("method") {
+        None => Ok("GET".into()),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok("GET".into()),
+        Some(Value::String(s)) => Ok(s.trim().to_ascii_uppercase()),
+        Some(other) => Err(McpError::InvalidArgs(format!(
+            "method must be a string (GET/POST/PUT/PATCH/DELETE), got {other}"
+        ))),
+    }
+}
+
+/// Strip agent-added quotes/whitespace and stringify numeric IDs.
+///
+/// OpenCode/pi often pass `issue_id: "\"483\""` (literal quote chars) or a JSON number.
+pub fn normalize_redmine_id_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) => {
+            let mut t = s.trim().to_string();
+            // Agents sometimes wrap IDs in one or more layers of quotes.
+            loop {
+                let stripped = t
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim()
+                    .to_string();
+                if stripped == t || stripped.is_empty() {
+                    t = stripped;
+                    break;
+                }
+                t = stripped;
+            }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Resolve issue id from `issue_id`, top-level `id`, or `query.id` / `query.issue_id`.
+pub fn resolve_issue_id_arg(args: &Value) -> Result<String, McpError> {
+    if let Some(v) = args.get("issue_id") {
+        if let Some(s) = normalize_redmine_id_value(v) {
+            return Ok(s);
+        }
+    }
+    if let Some(v) = args.get("id") {
+        if let Some(s) = normalize_redmine_id_value(v) {
+            return Ok(s);
+        }
+    }
+    if let Some(query) = args.get("query") {
+        for key in ["id", "issue_id"] {
+            if let Some(v) = query.get(key) {
+                if let Some(s) = normalize_redmine_id_value(v) {
+                    return Ok(s);
+                }
+            }
+        }
+    }
+    Err(McpError::InvalidArgs(
+        "issue_id required for get/update (also accepts id or query.id; do not quote the id)".into(),
+    ))
 }
 
 fn parse_issue_object(value: &Value) -> Option<serde_json::Map<String, Value>> {
@@ -280,8 +447,52 @@ fn hint_for_status(status: u16, errors: &[String], ctx: &ApiErrorContext) -> Str
     }
 }
 
+/// Merge nested `issue` (object or JSON string) into flat tool args.
+/// Top-level keys win over keys inside `issue`.
+pub fn flatten_issue_tool_args(args: &Value) -> Result<Value, McpError> {
+    let Some(raw_issue) = args.get("issue") else {
+        return Ok(args.clone());
+    };
+
+    let nested = match raw_issue {
+        Value::Object(map) => map.clone(),
+        Value::String(s) => {
+            let parsed: Value = serde_json::from_str(s).map_err(|_| {
+                McpError::InvalidArgs(
+                    "issue must be an object or a JSON object string (got invalid JSON string)"
+                        .into(),
+                )
+            })?;
+            parsed.as_object().cloned().ok_or_else(|| {
+                McpError::InvalidArgs("issue JSON string must decode to an object".into())
+            })?
+        }
+        _ => {
+            return Err(McpError::InvalidArgs(
+                "issue must be an object or a JSON object string".into(),
+            ));
+        }
+    };
+
+    let mut out = serde_json::Map::new();
+    for (k, v) in nested {
+        out.insert(k, v);
+    }
+    if let Some(top) = args.as_object() {
+        for (k, v) in top {
+            if k == "issue" {
+                continue;
+            }
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(Value::Object(out))
+}
+
 /// Build `{issue: {...}}` body from flat tool arguments (create = required core fields, update = partial).
+/// Accepts nested `issue` object/string and flattens it first.
 pub fn issue_body_from_args(args: &Value, for_create: bool) -> Result<Value, McpError> {
+    let args = flatten_issue_tool_args(args)?;
     if for_create {
         let project_id = args
             .get("project_id")
@@ -306,7 +517,7 @@ pub fn issue_body_from_args(args: &Value, for_create: bool) -> Result<Value, Mcp
             "subject": subject,
             "description": description,
         });
-        merge_optional_issue_fields(&mut issue, args);
+        merge_optional_issue_fields(&mut issue, &args);
         return Ok(json!({ "issue": issue }));
     }
 
@@ -446,5 +657,134 @@ mod tests {
             &json!({"projects": [{"id": 1}], "total_count": 1}),
             Some("openclaw")
         ));
+    }
+
+    #[test]
+    fn normalizes_quoted_and_numeric_ids() {
+        assert_eq!(
+            normalize_redmine_id_value(&json!("\"483\"")).as_deref(),
+            Some("483")
+        );
+        assert_eq!(
+            normalize_redmine_id_value(&json!("'483'")).as_deref(),
+            Some("483")
+        );
+        assert_eq!(
+            normalize_redmine_id_value(&json!(483)).as_deref(),
+            Some("483")
+        );
+        assert_eq!(
+            normalize_redmine_id_value(&json!("  483  ")).as_deref(),
+            Some("483")
+        );
+        assert_eq!(normalize_redmine_id_value(&json!("\"\"")), None);
+        assert_eq!(normalize_redmine_id_value(&json!("")), None);
+    }
+
+    #[test]
+    fn resolves_issue_id_aliases() {
+        assert_eq!(
+            resolve_issue_id_arg(&json!({"issue_id": "\"610\""})).unwrap(),
+            "610"
+        );
+        assert_eq!(
+            resolve_issue_id_arg(&json!({"id": 610})).unwrap(),
+            "610"
+        );
+        assert_eq!(
+            resolve_issue_id_arg(&json!({"query": {"id": 610}})).unwrap(),
+            "610"
+        );
+        assert_eq!(
+            resolve_issue_id_arg(&json!({"query": {"issue_id": "\"610\""}})).unwrap(),
+            "610"
+        );
+        assert!(resolve_issue_id_arg(&json!({"action": "get"})).is_err());
+        assert!(resolve_issue_id_arg(&json!({"issue_id": ""})).is_err());
+    }
+
+    #[test]
+    fn rejects_journals_path_with_include_hint() {
+        let err = validate_redmine_path("/issues/42/journals.json").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("include"), "{msg}");
+        assert!(msg.contains("journals"), "{msg}");
+    }
+
+    #[test]
+    fn defaults_missing_api_method_to_get() {
+        assert_eq!(resolve_api_method(&json!({"path": "/issues.json"})).unwrap(), "GET");
+        assert_eq!(resolve_api_method(&json!({"method": "post"})).unwrap(), "POST");
+    }
+
+    #[test]
+    fn sanitizes_include_drops_description() {
+        let v = json!(["journals", "description", "children"]);
+        assert_eq!(
+            sanitize_issue_include(Some(&v)).as_deref(),
+            Some("journals,children")
+        );
+        assert_eq!(sanitize_issue_include(Some(&json!(["description"]))), None);
+    }
+
+    #[test]
+    fn normalizes_resolved_status_name() {
+        assert_eq!(normalize_status_filter_value("resolved"), "3");
+        assert_eq!(normalize_status_filter_value("open"), "open");
+        assert_eq!(normalize_status_filter_value("1,resolved"), "1,3");
+    }
+
+    #[test]
+    fn coerces_string_api_body() {
+        let raw = json!("{\"notes\":\"x\"}");
+        let out = coerce_api_body(Some(&raw)).unwrap();
+        assert_eq!(out["notes"], "x");
+    }
+
+    #[test]
+    fn flattens_nested_issue_object_for_create() {
+        let args = json!({
+            "action": "create",
+            "issue": {
+                "project_id": "mcp-redmine",
+                "tracker_id": 2,
+                "status_id": 1,
+                "subject": "nested",
+                "description": "body"
+            }
+        });
+        let out = issue_body_from_args(&args, true).unwrap();
+        assert_eq!(out["issue"]["subject"], "nested");
+        assert_eq!(out["issue"]["project_id"], "mcp-redmine");
+        assert_eq!(out["issue"]["tracker_id"], 2);
+    }
+
+    #[test]
+    fn flattens_nested_issue_json_string_for_create() {
+        let args = json!({
+            "action": "create",
+            "issue": "{\"project_id\":\"mcp-redmine\",\"tracker_id\":2,\"status_id\":1,\"subject\":\"str\",\"description\":\"d\"}"
+        });
+        let out = issue_body_from_args(&args, true).unwrap();
+        assert_eq!(out["issue"]["subject"], "str");
+    }
+
+    #[test]
+    fn top_level_wins_over_nested_issue() {
+        let args = json!({
+            "action": "update",
+            "issue_id": "1",
+            "notes": "from-top",
+            "issue": { "notes": "from-nested", "status_id": 2 }
+        });
+        let out = issue_body_from_args(&args, false).unwrap();
+        assert_eq!(out["issue"]["notes"], "from-top");
+        assert_eq!(out["issue"]["status_id"], 2);
+    }
+
+    #[test]
+    fn rejects_invalid_issue_json_string() {
+        let args = json!({"action": "create", "issue": "not-json"});
+        assert!(issue_body_from_args(&args, true).is_err());
     }
 }
