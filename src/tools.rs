@@ -7,8 +7,8 @@ use tokio::sync::Mutex;
 use crate::api_helpers::{
     coerce_api_body, issue_body_from_args, issue_mutation_ack, known_projects_fallback,
     normalize_issue_api_request, normalize_status_filter_value, projects_list_needs_fallback,
-    resolve_api_method, resolve_issue_id_arg, sanitize_issue_include, validate_redmine_path,
-    ApiErrorContext,
+    resolve_api_method, resolve_issue_id_arg, sanitize_issue_include, validate_issue_list_query,
+    validate_redmine_path, ApiErrorContext,
 };
 use crate::compact::{is_list_collection_get, strip_list_bodies};
 use crate::error::{McpError, RedmineError};
@@ -484,6 +484,7 @@ pub async fn dispatch_tool(
                     if let Some(status) = q.get("status_id").cloned() {
                         q.insert("status_id".into(), normalize_status_filter_value(&status));
                     }
+                    validate_issue_list_query(&q)?;
                     let mut listed = client_request(
                         &client,
                         profile_ref,
@@ -562,6 +563,9 @@ pub async fn dispatch_tool(
             let mut q = query_map(args.get("query")).unwrap_or_default();
             if let Some(status) = q.get("status_id").cloned() {
                 q.insert("status_id".into(), normalize_status_filter_value(&status));
+            }
+            if is_list_collection_get(&method, &path) && path.contains("/issues.json") {
+                validate_issue_list_query(&q)?;
             }
             let coerced = coerce_api_body(args.get("body"));
             let body =
@@ -795,6 +799,28 @@ mod tests {
         let msg = safe_error_text(&err.unwrap_err(), &guard);
         assert!(msg.contains("DELETE"), "{msg}");
         assert!(msg.contains("/issues/"), "{msg}");
+    }
+
+    #[test]
+    fn dispatch_rejects_unknown_issue_list_query_key() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = test_store();
+        let err = rt.block_on(dispatch_tool(
+            TOOL_ISSUES,
+            json!({
+                "action": "list",
+                "query": { "user_filter_id": "me", "project_id": "mcp-redmine" }
+            }),
+            store.clone(),
+            None,
+        ));
+        let guard = rt.block_on(store.lock());
+        let msg = safe_error_text(&err.unwrap_err(), &guard);
+        assert!(msg.contains("user_filter_id"), "{msg}");
+        assert!(msg.contains("assigned_to_id"), "{msg}");
     }
 
     #[test]

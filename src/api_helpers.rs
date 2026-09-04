@@ -135,6 +135,74 @@ pub fn sanitize_issue_include(raw: Option<&Value>) -> Option<String> {
     }
 }
 
+/// Known Redmine `/issues.json` query keys (plus custom-field / advanced filter forms).
+pub fn is_allowed_issue_list_query_key(key: &str) -> bool {
+    const ALLOWED: &[&str] = &[
+        "offset",
+        "limit",
+        "sort",
+        "include",
+        "project_id",
+        "subproject_id",
+        "tracker_id",
+        "status_id",
+        "assigned_to_id",
+        "author_id",
+        "category_id",
+        "priority_id",
+        "fixed_version_id",
+        "parent_id",
+        "parent_issue_id",
+        "subject",
+        "description",
+        "created_on",
+        "updated_on",
+        "start_date",
+        "due_date",
+        "watcher_id",
+        "set_filter",
+        "query_id",
+        "group_by",
+        "f[]",
+        "c[]",
+    ];
+    if ALLOWED.contains(&key) {
+        return true;
+    }
+    if key.starts_with("cf_") {
+        return true;
+    }
+    // Advanced filter forms: f[], op[field], v[field], v[field][]
+    if key.starts_with("op[") || key.starts_with("v[") || key.starts_with("f[") {
+        return true;
+    }
+    false
+}
+
+/// Reject invented list filters (e.g. `user_filter_id`) so agents do not get silent empty results.
+pub fn validate_issue_list_query(query: &std::collections::HashMap<String, String>) -> Result<(), McpError> {
+    let mut unknown: Vec<&str> = query
+        .keys()
+        .filter(|k| !is_allowed_issue_list_query_key(k))
+        .map(|s| s.as_str())
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort();
+    let mut msg = format!(
+        "Unknown issue list query key(s): {}. Allowed examples: project_id, status_id, assigned_to_id, tracker_id, offset, limit, sort.",
+        unknown.join(", ")
+    );
+    if unknown
+        .iter()
+        .any(|k| *k == "user_filter_id" || *k == "user_id" || *k == "me")
+    {
+        msg.push_str(" Hint: use assigned_to_id=me (or a numeric user id), not user_filter_id.");
+    }
+    Err(McpError::InvalidArgs(msg))
+}
+
 /// Map common status names to Redmine status ids. Leaves open/closed/* and numeric ids alone.
 pub fn normalize_status_filter_value(raw: &str) -> String {
     let t = raw.trim();
@@ -869,5 +937,27 @@ mod tests {
         assert_eq!(out["http_status"], 201);
         assert_eq!(out["issue"]["subject"], "x");
         assert_eq!(out["changed"], json!(["project_id", "subject"]));
+    }
+
+    #[test]
+    fn rejects_unknown_issue_list_query_keys() {
+        let mut q = std::collections::HashMap::new();
+        q.insert("user_filter_id".into(), "me".into());
+        q.insert("project_id".into(), "mcp-redmine".into());
+        let err = validate_issue_list_query(&q).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("user_filter_id"), "{msg}");
+        assert!(msg.contains("assigned_to_id=me"), "{msg}");
+    }
+
+    #[test]
+    fn allows_known_issue_list_query_keys() {
+        let mut q = std::collections::HashMap::new();
+        q.insert("project_id".into(), "mcp-redmine".into());
+        q.insert("status_id".into(), "open".into());
+        q.insert("assigned_to_id".into(), "me".into());
+        q.insert("limit".into(), "25".into());
+        q.insert("cf_12".into(), "x".into());
+        assert!(validate_issue_list_query(&q).is_ok());
     }
 }
