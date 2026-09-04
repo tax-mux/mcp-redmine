@@ -76,7 +76,7 @@ pub fn all_tool_definitions() -> Value {
         },
         {
             "name": TOOL_ISSUES,
-            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on, no description). create/update accept flat args or nested issue object/JSON string; MCP wraps {issue:{...}}. create/update always return ok ACK (ok/action/issue_id/http_status/changed) even when Redmine body is empty (204). For journals use notes on update (not description). Never pass credentials as arguments.",
+            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on) and sets description_omitted=true (body via get). create/update accept flat args or nested issue object/JSON string; MCP wraps {issue:{...}}. create/update always return ok ACK (ok/action/issue_id/http_status/changed) even when Redmine body is empty (204). For journals use notes on update (not description). done_ratio: set while status is New/In Progress, then resolve (status_id=3); after Resolved, done_ratio often freezes. Never pass credentials as arguments.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -97,15 +97,16 @@ pub fn all_tool_definitions() -> Value {
                     "query": {
                         "type": "object",
                         "additionalProperties": { "type": "string" },
-                        "description": "Query parameters for list (project_id, status_id, etc.)"
+                        "description": "Query parameters for list (project_id, status_id, assigned_to_id, etc.)"
                     },
                     "limit": { "type": "integer", "description": "Page size for list (default 25)" },
                     "project_id": { "type": "string", "description": "Project ID or identifier (required for create)" },
                     "tracker_id": { "type": "integer", "description": "Tracker ID (required for create)" },
-                    "status_id": { "type": "integer", "description": "Status ID (required for create, optional for update)" },
+                    "status_id": { "type": "integer", "description": "Status ID (required for create, optional for update). Prefer numeric ids from redmine_metadata. Set done_ratio before moving to Resolved (3)." },
                     "subject": { "type": "string", "description": "Issue subject (required for create)" },
                     "description": { "type": "string", "description": "Issue description body (required for create; overwrites body on update)" },
                     "notes": { "type": "string", "description": "Journal note for update (does not replace description)" },
+                    "done_ratio": { "type": "integer", "description": "Progress 0-100. Set while status is New/In Progress; after Resolved (3) Redmine may freeze it. Parent aggregation depends on child closed status." },
                     "profile": profile_property()
                 },
                 "required": ["action"],
@@ -145,7 +146,7 @@ pub fn all_tool_definitions() -> Value {
         },
         {
             "name": TOOL_API_REQUEST,
-            "description": "Call any Redmine REST path. Paths must be Redmine REST (e.g. /issues.json), not local files. POST /issues.json auto-wraps flat fields in {issue:{...}}. GET list endpoints omit description bodies.",
+            "description": "Call any Redmine REST path. Paths must be Redmine REST (e.g. /issues.json), not local files. POST /issues.json auto-wraps flat fields in {issue:{...}}. GET list endpoints omit description bodies (description_omitted). Journals: GET include=journals via redmine_issues get — not /issues/:id/journals.json. Relations example: POST /issues/{id}/relations.json body {relation:{issue_to_id:N,relation_type:\"precedes\"}}. Delete issue: DELETE /issues/{id}.json.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -541,7 +542,7 @@ pub async fn dispatch_tool(
                 }
                 "delete" => {
                     return Err(McpError::InvalidArgs(
-                        "redmine_issues does not support action=delete. Use redmine_api_request with method=DELETE and path=/issues/{id}.json".into(),
+                        "redmine_issues does not support action=delete. Use redmine_api_request method=DELETE path=/issues/{id}.json. For relations use POST /issues/{id}/relations.json body {relation:{issue_to_id:N,relation_type:\"precedes\"}}.".into(),
                     ));
                 }
                 other => {

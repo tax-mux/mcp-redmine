@@ -99,7 +99,30 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 | `redmine_issues` | `list` / `get` / `create` / `update`。フラット引数 |
 | `redmine_projects` | `list`（id/name/identifier + total_count）/ `get`。openclaw 向け既知プロジェクト fallback |
 | `redmine_metadata` | trackers / issue_statuses / issue_priorities |
-| `redmine_api_request` | 任意 REST パス（パス検証・issue POST 自動ラップ） |
+| `redmine_api_request` | 任意 REST パス（パス検証・issue POST 自動ラップ）。relations: `POST /issues/{id}/relations.json` |
+
+### プロファイル用途
+
+| プロファイル名 | 想定用途 | 注意 |
+|----------------|----------|------|
+| `default` | ホスト既定（多くの場合 admin 相当） | コンテナ `REDMINE_PROFILE` の既定 |
+| `admin` / `takahiro` | 管理者操作・ステータス変更 | 権限が必要な更新向き |
+| `opencode` | OpenCode / 一部 pi 設定 | admin フラグ付きのことが多い |
+| `cursor` | Cursor エージェント | プロジェクト一覧は可。admin ではない |
+| `openclaw` | Reporter 系 bot | `/projects.json` が空になりやすい → `redmine_projects` の fallback を使う |
+
+`redmine_current_user` の `capabilities` で admin / can_list_projects を確認する。
+
+### done_ratio（進捗率）の順序
+
+1. **先に** `done_ratio` を更新する（status は新規=1 / 進行中=2 のまま）
+2. **その後** `status_id=3`（解決）にする
+3. 解決後に rate だけ変えると凍結されて効かないことが多い
+4. 親の自動集計は子のクローズ状態に依存する（環境設定次第）
+
+### list と description
+
+`redmine_issues` / `api_request` の **list** は本文を落とす。応答に `description_omitted: true` と `_hint` が付く。本文・journals は `action=get`。
 
 ### ユーザー自動登録
 

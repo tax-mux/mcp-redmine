@@ -1,11 +1,24 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Strip bulky body fields from Redmine **list** payloads.
 /// Keep `subject` / metadata (incl. `updated_on`, nested `project`/`status` names) for drill-down.
 /// Projects list keeps only `id` / `name` / `identifier` (plus top-level paging fields).
 pub fn strip_list_bodies(value: &mut Value) {
+    let had_issue_list = value
+        .get("issues")
+        .map(|i| i.is_array())
+        .unwrap_or(false);
     strip_issue_list_items(value);
     strip_project_list_items(value);
+    if had_issue_list {
+        if let Some(map) = value.as_object_mut() {
+            map.insert("description_omitted".into(), json!(true));
+            map.insert(
+                "_hint".into(),
+                json!("Issue descriptions are omitted on list; use redmine_issues action=get (optional include journals) for the body."),
+            );
+        }
+    }
 }
 
 fn strip_issue_list_items(value: &mut Value) {
@@ -109,6 +122,8 @@ mod tests {
         });
         strip_list_bodies(&mut v);
         assert!(v["issues"][0].get("description").is_none());
+        assert_eq!(v["description_omitted"], true);
+        assert!(v["_hint"].as_str().unwrap().contains("get"));
         assert_eq!(v["issues"][0]["subject"], "A");
         assert_eq!(v["issues"][0]["updated_on"], "2026-08-28T00:00:00Z");
         assert_eq!(v["issues"][0]["project"]["name"], "mcp-redmine");
