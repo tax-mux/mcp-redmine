@@ -550,6 +550,66 @@ pub fn issue_body_from_args(args: &Value, for_create: bool) -> Result<Value, Mcp
     Ok(json!({ "issue": issue }))
 }
 
+/// Build a non-null ACK for successful create/update so agents do not treat 204/empty as failure.
+///
+/// Existing Redmine payload fields are preserved; `ok` / `action` / `issue_id` / `http_status` /
+/// `changed` are added (or replace a bare `null` body).
+pub fn issue_mutation_ack(
+    action: &str,
+    issue_id: Option<&str>,
+    http_status: u16,
+    mut redmine_body: Value,
+    request_wrapped: &Value,
+) -> Value {
+    let mut changed: Vec<String> = request_wrapped
+        .get("issue")
+        .and_then(|i| i.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    changed.sort();
+
+    let id = issue_id
+        .map(str::to_string)
+        .or_else(|| {
+            redmine_body.pointer("/issue/id").and_then(|v| match v {
+                Value::Number(n) => Some(n.to_string()),
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default();
+
+    if redmine_body.is_null() {
+        return json!({
+            "ok": true,
+            "action": action,
+            "issue_id": id,
+            "http_status": http_status,
+            "changed": changed,
+        });
+    }
+
+    if let Some(obj) = redmine_body.as_object_mut() {
+        obj.insert("ok".into(), json!(true));
+        obj.insert("action".into(), json!(action));
+        if !id.is_empty() {
+            obj.insert("issue_id".into(), json!(id));
+        }
+        obj.insert("http_status".into(), json!(http_status));
+        obj.insert("changed".into(), json!(changed));
+        return redmine_body;
+    }
+
+    json!({
+        "ok": true,
+        "action": action,
+        "issue_id": id,
+        "http_status": http_status,
+        "changed": changed,
+        "redmine": redmine_body,
+    })
+}
+
 fn merge_optional_issue_fields(issue: &mut Value, args: &Value) {
     let Some(map) = issue.as_object_mut() else {
         return;
@@ -786,5 +846,28 @@ mod tests {
     fn rejects_invalid_issue_json_string() {
         let args = json!({"action": "create", "issue": "not-json"});
         assert!(issue_body_from_args(&args, true).is_err());
+    }
+
+    #[test]
+    fn mutation_ack_replaces_null_body() {
+        let req = json!({"issue": {"notes": "hi", "status_id": 2}});
+        let out = issue_mutation_ack("update", Some("627"), 204, Value::Null, &req);
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["action"], "update");
+        assert_eq!(out["issue_id"], "627");
+        assert_eq!(out["http_status"], 204);
+        assert_eq!(out["changed"], json!(["notes", "status_id"]));
+    }
+
+    #[test]
+    fn mutation_ack_enriches_create_payload() {
+        let req = json!({"issue": {"subject": "x", "project_id": "mcp-redmine"}});
+        let redmine = json!({"issue": {"id": 42, "subject": "x"}});
+        let out = issue_mutation_ack("create", None, 201, redmine, &req);
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["issue_id"], "42");
+        assert_eq!(out["http_status"], 201);
+        assert_eq!(out["issue"]["subject"], "x");
+        assert_eq!(out["changed"], json!(["project_id", "subject"]));
     }
 }

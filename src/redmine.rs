@@ -34,12 +34,24 @@ impl RedmineClient {
         query: Option<&HashMap<String, String>>,
         body: Option<&Value>,
     ) -> Result<Value, RedmineError> {
-        let mut value = self.request_raw(method, path, query, body).await?;
-        strip_secret_fields(&mut value);
+        let (_status, value) = self.request_with_status(method, path, query, body).await?;
         Ok(value)
     }
 
-    /// Like [`request`], but keeps secret fields (for in-process provisioning only).
+    /// Like [`request`], but also returns the HTTP status (for mutation ACKs).
+    pub async fn request_with_status(
+        &self,
+        method: &str,
+        path: &str,
+        query: Option<&HashMap<String, String>>,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value), RedmineError> {
+        let (status, mut value) = self.request_raw_with_status(method, path, query, body).await?;
+        strip_secret_fields(&mut value);
+        Ok((status, value))
+    }
+
+    /// Like [`request_with_status`], but keeps secret fields (for in-process provisioning only).
     pub async fn request_raw(
         &self,
         method: &str,
@@ -47,6 +59,17 @@ impl RedmineClient {
         query: Option<&HashMap<String, String>>,
         body: Option<&Value>,
     ) -> Result<Value, RedmineError> {
+        let (_status, value) = self.request_raw_with_status(method, path, query, body).await?;
+        Ok(value)
+    }
+
+    async fn request_raw_with_status(
+        &self,
+        method: &str,
+        path: &str,
+        query: Option<&HashMap<String, String>>,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value), RedmineError> {
         let url = if path.starts_with("http://") || path.starts_with("https://") {
             path.to_string()
         } else {
@@ -99,11 +122,11 @@ impl RedmineClient {
         }
 
         if text.trim().is_empty() {
-            return Ok(Value::Null);
+            return Ok((status, Value::Null));
         }
 
         let value: Value = serde_json::from_str(&text)?;
-        Ok(value)
+        Ok((status, value))
     }
 
     pub async fn current_user(&self) -> Result<Value, RedmineError> {

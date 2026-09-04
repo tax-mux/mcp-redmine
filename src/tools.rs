@@ -5,9 +5,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api_helpers::{
-    coerce_api_body, issue_body_from_args, known_projects_fallback, normalize_issue_api_request,
-    normalize_status_filter_value, projects_list_needs_fallback, resolve_api_method,
-    resolve_issue_id_arg, sanitize_issue_include, validate_redmine_path, ApiErrorContext,
+    coerce_api_body, issue_body_from_args, issue_mutation_ack, known_projects_fallback,
+    normalize_issue_api_request, normalize_status_filter_value, projects_list_needs_fallback,
+    resolve_api_method, resolve_issue_id_arg, sanitize_issue_include, validate_redmine_path,
+    ApiErrorContext,
 };
 use crate::compact::{is_list_collection_get, strip_list_bodies};
 use crate::error::{McpError, RedmineError};
@@ -75,7 +76,7 @@ pub fn all_tool_definitions() -> Value {
         },
         {
             "name": TOOL_ISSUES,
-            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on, no description). create/update accept flat args or nested issue object/JSON string; MCP wraps {issue:{...}}. For journals use notes on update (not description). Never pass credentials as arguments.",
+            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on, no description). create/update accept flat args or nested issue object/JSON string; MCP wraps {issue:{...}}. create/update always return ok ACK (ok/action/issue_id/http_status/changed) even when Redmine body is empty (204). For journals use notes on update (not description). Never pass credentials as arguments.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -241,6 +242,20 @@ async fn client_request(
 ) -> Result<Value, McpError> {
     client
         .request(method, path, query, body)
+        .await
+        .map_err(|e| map_api_err(e, api_ctx(profile, method, path)))
+}
+
+async fn client_request_with_status(
+    client: &RedmineClient,
+    profile: Option<&str>,
+    method: &str,
+    path: &str,
+    query: Option<&HashMap<String, String>>,
+    body: Option<&Value>,
+) -> Result<(u16, Value), McpError> {
+    client
+        .request_with_status(method, path, query, body)
         .await
         .map_err(|e| map_api_err(e, api_ctx(profile, method, path)))
 }
@@ -499,7 +514,7 @@ pub async fn dispatch_tool(
                 }
                 "create" => {
                     let body = issue_body_from_args(&args, true)?;
-                    client_request(
+                    let (status, resp) = client_request_with_status(
                         &client,
                         profile_ref,
                         "POST",
@@ -507,12 +522,13 @@ pub async fn dispatch_tool(
                         None,
                         Some(&body),
                     )
-                    .await?
+                    .await?;
+                    issue_mutation_ack("create", None, status, resp, &body)
                 }
                 "update" => {
                     let id = resolve_issue_id_arg(&args)?;
                     let body = issue_body_from_args(&args, false)?;
-                    client_request(
+                    let (status, resp) = client_request_with_status(
                         &client,
                         profile_ref,
                         "PUT",
@@ -520,7 +536,8 @@ pub async fn dispatch_tool(
                         None,
                         Some(&body),
                     )
-                    .await?
+                    .await?;
+                    issue_mutation_ack("update", Some(&id), status, resp, &body)
                 }
                 "delete" => {
                     return Err(McpError::InvalidArgs(
