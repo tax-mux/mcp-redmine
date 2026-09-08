@@ -124,6 +124,36 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 
 `redmine_issues` / `api_request` の **list** は本文を落とす。応答に `description_omitted: true` と `_hint` が付く。本文・journals は `action=get`。
 
+### 添付（attachments）
+
+`redmine_issues` に `attachment_paths` / `delete_attachment_ids` を渡すと、MCP サーバがファイルを読み、
+`POST /uploads.json` → token → issue 連携（`issue.uploads`）で添付する。**ファイルは MCP サーバ上のローカルパス**を指定する。
+
+```json
+// create: スクリーンショットを添付して作成
+{
+  "action": "create",
+  "project_id": "mcp-redmine",
+  "tracker_id": 2,
+  "subject": "example",
+  "description": "body",
+  "attachment_paths": ["/path/to/screenshot.png"]
+}
+
+// update: 添付を追加しつつ、既存添付 #12 を削除
+{
+  "action": "update",
+  "issue_id": "42",
+  "notes": "log",
+  "attachment_paths": ["/path/to/logs.txt"],
+  "delete_attachment_ids": [12]
+}
+```
+
+- 削除は `action=update` でのみ有効。issue 更新後に `DELETE /attachments/{id}`（1 ID ずつ）として実行される
+- 添付一覧・ダウンロードは既存の `include=attachments`（`action=get` / `api_request`）を使う
+- エラーは path 付き（ファイル未存在 / 読込失敗 / 4xx・5xx）で返る
+
 ### ユーザー自動登録
 
 ```text

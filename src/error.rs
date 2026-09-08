@@ -14,6 +14,12 @@ pub enum RedmineError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("file error: {0}")]
+    File(String),
+
+    #[error("upload failed: path={path}, status={status}, body={body}")]
+    UploadFailed { path: String, status: u16, body: String },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -59,6 +65,16 @@ impl McpError {
                     "hint": "Fix tool arguments. For issues use redmine_issues with action list/get/create/update and flat fields."
                 })
             }
+            McpError::Redmine(RedmineError::UploadFailed { path, status, body }) => {
+                let body = format!("attachment upload failed: path={path}; {body}");
+                structured_api_error(*status, &body, ctx)
+            }
+            McpError::Redmine(RedmineError::File(msg)) => serde_json::json!({
+                "error": "file_error",
+                "message": store.redact_all(msg),
+                "profile": ctx.profile,
+                "hint": "Check that the attachment path exists and is readable by the mcp-redmine server.",
+            }),
             other => {
                 let text = store.redact_all(&other.to_string());
                 serde_json::json!({

@@ -5,10 +5,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api_helpers::{
-    coerce_api_body, issue_body_from_args, issue_mutation_ack, known_projects_fallback,
-    normalize_issue_api_request, normalize_status_filter_value, projects_list_needs_fallback,
-    resolve_api_method, resolve_issue_id_arg, sanitize_issue_include, validate_issue_list_query,
-    validate_redmine_path, ApiErrorContext,
+    annotate_error_with_uploaded, attachment_spec_for_action, coerce_api_body,
+    delete_attachment_paths, issue_body_from_args, issue_body_with_uploads, issue_mutation_ack,
+    known_projects_fallback, normalize_issue_api_request, normalize_status_filter_value,
+    projects_list_needs_fallback, resolve_api_method, resolve_issue_id_arg,
+    sanitize_issue_include, upload_entries, validate_issue_list_query, validate_redmine_path, ApiErrorContext,
 };
 use crate::compact::{is_list_collection_get, strip_list_bodies};
 use crate::error::{McpError, RedmineError};
@@ -35,6 +36,14 @@ fn profile_property() -> Value {
     })
 }
 
+
+async fn upload_attachment_files(client: &RedmineClient, paths: &[std::string::String]) -> Result<Vec<Value>, McpError> {
+    let mut out = Vec::new();
+    for p in paths {
+        out.push(client.upload_attachment(p).await?);
+    }
+    Ok(out)
+}
 
 pub fn all_tool_definitions() -> Value {
     json!([
@@ -97,15 +106,25 @@ pub fn all_tool_definitions() -> Value {
                     "query": {
                         "type": "object",
                         "additionalProperties": { "type": "string" },
-                        "description": "Query parameters for list (project_id, status_id, assigned_to_id, etc.)"
+                        "description": "Supported list filters: status_id, tracker_id, project_id, subproject_id, assigned_to_id, author_id, category_id, priority_id, fixed_version_id, subject. Use numeric ids and their is_closed flag from the redmine_metadata issue_statuses call instead of guessing (e.g. not 'resolved'); for many specific issue ids, call action=get with issue_id=N several times -- 'issue_ids[]' is NOT a supported filter. Do NOT add any other keys; unknown keys are rejected with an error.",
                     },
                     "limit": { "type": "integer", "description": "Page size for list (default 25)" },
-                    "project_id": { "type": "string", "description": "Project ID or identifier (required for create)" },
+                    "project_id": { "type": "string", "description": "Project ID or identifier. Required for create. Also valid as a list filter inside query: {\"query\": {\"project_id\": 3}} to list only that project's issues." },
                     "tracker_id": { "type": "integer", "description": "Tracker ID (required for create)" },
                     "status_id": { "type": "integer", "description": "Status ID (required for create, optional for update). Prefer numeric ids from redmine_metadata. Set done_ratio before moving to Resolved (3)." },
                     "subject": { "type": "string", "description": "Issue subject (required for create)" },
                     "description": { "type": "string", "description": "Issue description body (required for create; overwrites body on update)" },
                     "notes": { "type": "string", "description": "Journal note for update (does not replace description)" },
+                    "attachment_paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Local file paths (mcp-redmine server FS) to attach. create: attached on creation; update: attached on update. Values are paths, never credentials."
+                    },
+                    "delete_attachment_ids": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "description": "Attachment IDs to delete (action=update only). Executed as DELETE /attachments/{id} after the issue update succeeds."
+                    },
                     "done_ratio": { "type": "integer", "description": "Progress 0-100. Set while status is New/In Progress; after Resolved (3) Redmine may freeze it. Parent aggregation depends on child closed status." },
                     "profile": profile_property()
                 },
@@ -515,8 +534,16 @@ pub async fn dispatch_tool(
                     .await?
                 }
                 "create" => {
-                    let body = issue_body_from_args(&args, true)?;
-                    let (status, resp) = client_request_with_status(
+                    let base_body = issue_body_from_args(&args, true)?;
+                    let spec = attachment_spec_for_action("create", &args)?;
+                    let uploads: Vec<Value> = match &spec.paths {
+                        Some(paths) => upload_attachment_files(&client, paths).await?,
+                        None => Vec::new(),
+                    };
+                    let paths = spec.paths.unwrap_or_default();
+                    let entries = upload_entries(&paths, &uploads)?;
+                    let body = issue_body_with_uploads(&base_body, &entries)?;
+                    let (status, resp) = match client_request_with_status(
                         &client,
                         profile_ref,
                         "POST",
@@ -524,13 +551,25 @@ pub async fn dispatch_tool(
                         None,
                         Some(&body),
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => return Err(annotate_error_with_uploaded(e, &uploads)),
+                    };
                     issue_mutation_ack("create", None, status, resp, &body)
                 }
                 "update" => {
                     let id = resolve_issue_id_arg(&args)?;
-                    let body = issue_body_from_args(&args, false)?;
-                    let (status, resp) = client_request_with_status(
+                    let base_body = issue_body_from_args(&args, false)?;
+                    let spec = attachment_spec_for_action("update", &args)?;
+                    let uploads: Vec<Value> = match &spec.paths {
+                        Some(paths) => upload_attachment_files(&client, paths).await?,
+                        None => Vec::new(),
+                    };
+                    let paths = spec.paths.unwrap_or_default();
+                    let entries = upload_entries(&paths, &uploads)?;
+                    let body = issue_body_with_uploads(&base_body, &entries)?;
+                    let (status, resp) = match client_request_with_status(
                         &client,
                         profile_ref,
                         "PUT",
@@ -538,8 +577,32 @@ pub async fn dispatch_tool(
                         None,
                         Some(&body),
                     )
-                    .await?;
-                    issue_mutation_ack("update", Some(&id), status, resp, &body)
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => return Err(annotate_error_with_uploaded(e, &uploads)),
+                    };
+                    // Attachment deletion runs after the update: `DELETE /attachments/{id}`
+                    // (verified working on the live Redmine; issue-update delete parameters
+                    // are a no-op there).
+                    let mut failed: Vec<String> = Vec::new();
+                    for (delete_id, path) in spec.delete_ids.iter().zip(delete_attachment_paths(&spec.delete_ids)) {
+                        if let Err(e) = client_request(&client, profile_ref, "DELETE", &path, None, None).await {
+                            failed.push(format!("attachment #{delete_id}: {e}"));
+                        }
+                    }
+                    if !failed.is_empty() {
+                        return Err(McpError::Internal(format!(
+                            "issue updated but attachment deletion failed: {failed:?}"
+                        )));
+                    }
+                    let mut ack = issue_mutation_ack("update", Some(&id), status, resp, &body);
+                    if !spec.delete_ids.is_empty() {
+                        if let Some(obj) = ack.as_object_mut() {
+                            obj.insert("deleted_attachments".into(), json!(spec.delete_ids));
+                        }
+                    }
+                    ack
                 }
                 "delete" => {
                     return Err(McpError::InvalidArgs(
