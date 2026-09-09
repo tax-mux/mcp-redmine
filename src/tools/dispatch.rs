@@ -16,7 +16,7 @@ use crate::provision::provision_user;
 use crate::redmine::RedmineClient;
 use crate::secret::strip_secret_fields;
 use crate::tools::common::{
-    api_ctx, client_request, map_api_err, query_map, reject_credential_args, resolve_profile_arg,
+    api_ctx, client_request, map_api_err, query_map, reject_credential_args, resolve_session_profile,
 };
 use crate::tools::definitions::{
     TOOL_API_REQUEST, TOOL_CURRENT_USER, TOOL_ISSUES, TOOL_LIST_PROFILES, TOOL_METADATA,
@@ -217,8 +217,8 @@ pub async fn dispatch_tool(
         return Ok(result);
     }
 
-    let profile = resolve_profile_arg(&args, header_profile).map(|s| s.to_string());
-    let profile_ref = profile.as_deref();
+    let profile = resolve_session_profile(&args, header_profile)?;
+    let profile_ref = Some(profile.as_str());
     let client = {
         let store = store.lock().await;
         store.client_for(profile_ref)?
@@ -402,6 +402,21 @@ mod tests {
         assert!(text.contains(TOOL_METADATA));
         assert!(text.contains("\"update\""));
         assert!(text.contains("\"profile\""));
+        assert!(text.contains("DO NOT PASS") || text.contains("principally forbidden"));
+    }
+
+    #[test]
+    fn initialize_includes_profile_policy_instructions() {
+        let init = crate::handler::initialize_result();
+        let instructions = init
+            .get("instructions")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            instructions.contains("原則的に禁止") || instructions.contains("principally forbidden"),
+            "{instructions}"
+        );
+        assert!(instructions.contains("X-Redmine-Profile"), "{instructions}");
     }
 
     #[test]
@@ -453,7 +468,7 @@ mod tests {
             TOOL_API_REQUEST,
             json!({"method": "GET", "path": "/home/node/.openclaw/openclaw.json"}),
             store.clone(),
-            None,
+            Some("alice"),
         ));
         assert!(err.is_err());
     }
@@ -469,7 +484,7 @@ mod tests {
             TOOL_ISSUES,
             json!({"action": "delete", "issue_id": "1"}),
             store.clone(),
-            None,
+            Some("alice"),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
@@ -491,7 +506,7 @@ mod tests {
                 "query": { "user_filter_id": "me", "project_id": "mcp-redmine" }
             }),
             store.clone(),
-            None,
+            Some("alice"),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
@@ -510,7 +525,7 @@ mod tests {
             TOOL_API_REQUEST,
             json!({"path": "/issues/1/journals.json"}),
             store.clone(),
-            None,
+            Some("alice"),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
@@ -518,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_profile_errors_without_keys() {
+    fn unknown_header_profile_errors_without_keys() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -526,14 +541,50 @@ mod tests {
         let store = test_store();
         let err = rt.block_on(dispatch_tool(
             TOOL_CURRENT_USER,
-            json!({"profile": "nope"}),
+            json!({}),
             store.clone(),
-            None,
+            Some("nope"),
         ));
         assert!(err.is_err());
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
         assert!(msg.contains("Unknown profile") || msg.contains("invalid_arguments"));
         assert!(!msg.contains("should-not-appear"));
+    }
+
+    #[test]
+    fn dispatch_rejects_tool_arg_profile() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = test_store();
+        let err = rt.block_on(dispatch_tool(
+            TOOL_CURRENT_USER,
+            json!({"profile": "alice"}),
+            store.clone(),
+            Some("alice"),
+        ));
+        let guard = rt.block_on(store.lock());
+        let msg = safe_error_text(&err.unwrap_err(), &guard);
+        assert!(msg.contains("原則的に禁止") || msg.contains("principally forbidden"), "{msg}");
+    }
+
+    #[test]
+    fn dispatch_rejects_missing_header_profile() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = test_store();
+        let err = rt.block_on(dispatch_tool(
+            TOOL_CURRENT_USER,
+            json!({}),
+            store.clone(),
+            None,
+        ));
+        let guard = rt.block_on(store.lock());
+        let msg = safe_error_text(&err.unwrap_err(), &guard);
+        assert!(msg.contains("原則的に禁止") || msg.contains("principally forbidden"), "{msg}");
     }
 }

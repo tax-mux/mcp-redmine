@@ -14,7 +14,7 @@ pub(crate) const PROFILE_PROP: &str = "profile";
 fn profile_property() -> Value {
     json!({
         "type": "string",
-        "description": "Key profile name stored in the container (not a secret token). Omit to use X-Redmine-Profile header or the default profile."
+        "description": "DO NOT PASS. Tool-arg profile is principally forbidden without explicit user permission; omit it. Identity comes only from the X-Redmine-Profile connection header. The default fallback is disabled."
     })
 }
 

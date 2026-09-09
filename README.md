@@ -11,6 +11,12 @@ Redmine REST API を操作する MCP サーバ。**Docker コンテナで常駐*
 | Cursor / OpenCode の `mcp.json` | × URL のみ。`command` / `env` / キー禁止 |
 | MCP ツール引数・レスポンス・エラー | × 拒否 / 除去 / マスク（`profile` 名のみ可） |
 
+## 設計: エージェント身元（プロファイル）
+
+- **通常、ツール引数 `profile` は不要・原則禁止**（ユーザーが明示許可した場合を除く）。身元はクライアント設定の `X-Redmine-Profile` のみ。
+- 引数で `profile` を渡す／ヘッダ無し／ヘッダが `default` → エラー（default フォールバックなし）。
+- MCP `initialize.instructions` にも同方針を載せる。
+
 ## セットアップ
 
 ```bash
@@ -61,7 +67,7 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 
 フラット形式 `{"default":"...","alice":"..."}` も可。
 
-ツール呼び出し時に任意引数 `profile`（例: `"openclaw"`）を渡す。省略時は `REDMINE_PROFILE` または `default`。
+身元は **クライアントの `X-Redmine-Profile` ヘッダ**で固定する（例: `"opencode"`）。ツール引数の `profile` は原則禁止（渡すとエラー）。ヘッダ無しや `default` もエラー。
 
 プロファイル名の一覧は `redmine_list_profiles`（キーは返さない）。キーの追加・更新はオペレータが `.env` / ファイルを編集してコンテナを再起動する（LLM からキーを書かない）。
 

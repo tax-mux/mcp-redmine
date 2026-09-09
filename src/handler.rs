@@ -7,7 +7,7 @@ use crate::api_helpers::ApiErrorContext;
 use crate::error::McpError;
 use crate::keys::KeyStore;
 use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
-use crate::tools::{all_tool_definitions, dispatch_tool, safe_error_text};
+use crate::tools::{all_tool_definitions, dispatch_tool, safe_error_text, PROFILE_POLICY_MSG};
 
 pub fn initialize_result() -> Value {
     json!({
@@ -18,7 +18,8 @@ pub fn initialize_result() -> Value {
         "serverInfo": {
             "name": "mcp-redmine",
             "version": "0.2.0"
-        }
+        },
+        "instructions": PROFILE_POLICY_MSG
     })
 }
 

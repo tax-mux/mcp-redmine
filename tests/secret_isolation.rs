@@ -90,4 +90,8 @@ fn readme_documents_multi_profile_without_client_keys() {
     assert!(text.contains("profile"));
     assert!(text.contains("mcp.json"));
     assert!(text.contains("URL のみ") || text.contains("url"));
+    assert!(
+        text.contains("原則禁止") || text.contains("X-Redmine-Profile"),
+        "README should document header-only identity policy"
+    );
 }
