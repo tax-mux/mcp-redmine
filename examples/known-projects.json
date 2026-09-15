@@ -1,0 +1,10 @@
+{
+  "profiles": ["bot"],
+  "projects": [
+    {
+      "id": 1,
+      "identifier": "example-project",
+      "name": "Example Project"
+    }
+  ]
+}

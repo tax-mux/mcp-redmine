@@ -8,7 +8,7 @@ Redmine REST API を操作する MCP サーバ。**Docker コンテナで常駐*
 |----------|----------|
 | ホストの `.env` / キーファイル（gitignore・Compose が読む） | ○ 格納（MCP クライアントには渡さない） |
 | Docker コンテナ環境変数（Compose `env_file`） | ○ 実行時注入 |
-| Cursor / OpenCode の `mcp.json` | × URL のみ。`command` / `env` / キー禁止 |
+| Cursor / OpenCode などの `mcp.json` | × URL のみ。`command` / `env` / キー禁止 |
 | MCP ツール引数・レスポンス・エラー | × 拒否 / 除去 / マスク（`profile` 名のみ可） |
 
 ## 設計: エージェント身元（プロファイル）
@@ -17,16 +17,22 @@ Redmine REST API を操作する MCP サーバ。**Docker コンテナで常駐*
 - 引数で `profile` を渡す／ヘッダ無し／ヘッダが `default` → エラー（default フォールバックなし）。
 - MCP `initialize.instructions` にも同方針を載せる。
 
+プロファイル名はキーストア（`.env` / `REDMINE_API_KEYS_FILE`）側で自由に定義する。権限の違いは Redmine 側のロールに依存する。接続後は `redmine_current_user` の `capabilities` で admin / プロジェクト一覧可否を確認する。
+
 ## セットアップ
 
 ```bash
 cp .env.example .env
 # .env: REDMINE_URL とキー（単一 or 複数プロファイル）
+mkdir -p secrets
+# secrets/redmine-keys.json を用意（.gitignore 済み）
+# 任意: secrets/known-projects.json（examples/known-projects.json を参考）
 
 docker compose up -d --build
 curl -sS http://127.0.0.1:3100/health
-# LAN からも到達可（ホストが 0.0.0.0:3100 で公開）: curl -sS http://<LAN_IP>:3100/health
 ```
+
+Compose はホスト `3100` をコンテナ `8080` に公開する。LAN から使う場合はファイアウォールと到達性を確認する。
 
 ### 単一キー（互換）
 
@@ -35,7 +41,7 @@ REDMINE_URL=http://host.docker.internal:3000
 REDMINE_API_KEY=your-key
 ```
 
-`REDMINE_API_KEY` はプロファイル名 `default` として登録される。
+`REDMINE_API_KEY` はプロファイル名 `default` として登録される。クライアントからは別プロファイル名を `X-Redmine-Profile` で指定する想定が一般的（ヘッダ `default` は拒否される）。
 
 ### 複数ユーザー / プロファイル
 
@@ -43,8 +49,7 @@ REDMINE_API_KEY=your-key
 
 ```bash
 REDMINE_URL=http://host.docker.internal:3000
-REDMINE_API_KEYS={"default":"...","openclaw":"...","cursor":"..."}
-REDMINE_PROFILE=default
+REDMINE_API_KEYS={"default":"...","alice":"...","bot":"..."}
 ```
 
 **B. ファイル `REDMINE_API_KEYS_FILE`（推奨・権限を絞れる）**
@@ -58,20 +63,45 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 ```json
 {
   "profiles": {
-    "default": "key-for-default-user",
-    "openclaw": "key-for-openclaw-bot",
-    "alice": "key-for-alice"
+    "default": "key-for-bootstrap-admin",
+    "alice": "key-for-alice",
+    "bot": "key-for-automation-bot"
   }
 }
 ```
 
 フラット形式 `{"default":"...","alice":"..."}` も可。
 
-身元は **クライアントの `X-Redmine-Profile` ヘッダ**で固定する（例: `"opencode"`）。ツール引数の `profile` は原則禁止（渡すとエラー）。ヘッダ無しや `default` もエラー。
+身元は **クライアントの `X-Redmine-Profile` ヘッダ**で固定する（例: `"alice"`）。ツール引数の `profile` は原則禁止（渡すとエラー）。ヘッダ無しや `default` もエラー。
 
 プロファイル名の一覧は `redmine_list_profiles`（キーは返さない）。キーの追加・更新はオペレータが `.env` / ファイルを編集してコンテナを再起動する（LLM からキーを書かない）。
 
-## Cursor 設定（URL のみ）
+### known-project フォールバック（任意）
+
+Reporter など `/projects.json` が空（または 403）になるプロファイル向けに、オペレータが既知プロジェクト一覧を渡せる。
+
+```bash
+REDMINE_KNOWN_PROJECTS_FILE=/secrets/known-projects.json
+```
+
+例（`examples/known-projects.json`）:
+
+```json
+{
+  "profiles": ["bot"],
+  "projects": [
+    {"id": 1, "identifier": "example-project", "name": "Example Project"}
+  ]
+}
+```
+
+- 未設定・ファイル無し → フォールバックしない
+- `profiles` に列挙した名前（大文字小文字無視）だけが対象
+- 応答には `_fallback: true` が付く
+
+## MCP クライアント設定
+
+### URL のみ
 
 `examples/mcp.json`:
 
@@ -85,7 +115,24 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 }
 ```
 
-クライアントは SSE エンドポイントにだけ接続する。docker コマンドも API キーも渡さない。プロファイルを固定したい場合は `headers.X-Redmine-Profile` を付ける（上記「Cursor 設定」参照）。
+クライアントは SSE エンドポイントにだけ接続する。docker コマンドも API キーも渡さない。
+
+### URL + プロファイルヘッダ（推奨）
+
+API キーは `mcp.json` に書かない。プロファイル名だけヘッダで指定する:
+
+```json
+{
+  "mcpServers": {
+    "mcp-redmine": {
+      "url": "http://127.0.0.1:3100/sse",
+      "headers": {
+        "X-Redmine-Profile": "alice"
+      }
+    }
+  }
+}
+```
 
 ## エンドポイント
 
@@ -102,30 +149,20 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 | `redmine_list_profiles` | コンテナ内プロファイル名一覧（キーなし） |
 | `redmine_provision_user` | login だけでユーザー作成。パスワード自動生成（返さない）。API キーをプロファイルに永続化 |
 | `redmine_current_user` | 認証ユーザー + profile/capabilities（`api_key` 除去済み） |
-| `redmine_issues` | `list` / `get` / `create` / `update`。フラット引数 |
-| `redmine_projects` | `list`（id/name/identifier + total_count）/ `get`。openclaw 向け既知プロジェクト fallback |
+| `redmine_issues` | `list` / `get` / `create` / `update`。フラット引数。添付対応 |
+| `redmine_projects` | `list`（id/name/identifier + total_count）/ `get`。設定ファイル対象プロファイルは空一覧時に known-project フォールバック可 |
 | `redmine_metadata` | trackers / issue_statuses / issue_priorities |
+| `redmine_wiki` | wiki ページの list / get / create / update / delete |
 | `redmine_api_request` | 任意 REST パス（パス検証・issue POST 自動ラップ）。relations: `POST /issues/{id}/relations.json` |
-
-### プロファイル用途
-
-| プロファイル名 | 想定用途 | 注意 |
-|----------------|----------|------|
-| `default` | ホスト既定（多くの場合 admin 相当） | コンテナ `REDMINE_PROFILE` の既定 |
-| `admin` / `takahiro` | 管理者操作・ステータス変更 | 権限が必要な更新向き |
-| `opencode` | OpenCode | admin フラグ付きのことが多い |
-| `cursor` | Cursor エージェント | プロジェクト一覧は可。admin ではない |
-| `pi` | pi-agent | Developer。`X-Redmine-Profile: pi` |
-| `openclaw` | Reporter 系 bot | `/projects.json` が空になりやすい → `redmine_projects` の fallback を使う |
-
-`redmine_current_user` の `capabilities` で admin / can_list_projects を確認する。
 
 ### done_ratio（進捗率）の順序
 
-1. **先に** `done_ratio` を更新する（status は新規=1 / 進行中=2 のまま）
-2. **その後** `status_id=3`（解決）にする
+1. **先に** `done_ratio` を更新する（status は新規 / 進行中のまま）
+2. **その後** 解決ステータスにする
 3. 解決後に rate だけ変えると凍結されて効かないことが多い
 4. 親の自動集計は子のクローズ状態に依存する（環境設定次第）
+
+数値の `status_id` は環境ごとに異なる場合がある。作成・更新前に `redmine_metadata` で確認する。
 
 ### list と description
 
@@ -137,17 +174,17 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 `POST /uploads.json` → token → issue 連携（`issue.uploads`）で添付する。**ファイルは MCP サーバ上のローカルパス**を指定する。
 
 ```json
-// create: スクリーンショットを添付して作成
 {
   "action": "create",
-  "project_id": "mcp-redmine",
+  "project_id": "my-project",
   "tracker_id": 2,
   "subject": "example",
   "description": "body",
   "attachment_paths": ["/path/to/screenshot.png"]
 }
+```
 
-// update: 添付を追加しつつ、既存添付 #12 を削除
+```json
 {
   "action": "update",
   "issue_id": "42",
@@ -158,36 +195,19 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 ```
 
 - 削除は `action=update` でのみ有効。issue 更新後に `DELETE /attachments/{id}`（1 ID ずつ）として実行される
-- 添付一覧・ダウンロードは既存の `include=attachments`（`action=get` / `api_request`）を使う
+- 添付一覧・ダウンロードは `include=attachments`（`action=get` / `api_request`）を使う
 - エラーは path 付き（ファイル未存在 / 読込失敗 / 4xx・5xx）で返る
 
 ### ユーザー自動登録
 
 ```text
-redmine_provision_user { "login": "cursor" }
+redmine_provision_user { "login": "alice" }
 ```
 
 - パスワードはコンテナ内で生成し、**応答に含めない**
 - API キーは `REDMINE_API_KEYS_FILE` にプロファイルとして保存
 - 応答は `profile` / `login` / `user_id` / `mail` のみ
 - デフォルトプロファイルの API キーが **Redmine admin** であること
-
-### Cursor 設定（URL + プロファイルヘッダ）
-
-API キーは mcp.json に書かない。プロファイル名だけヘッダで指定する:
-
-```json
-{
-  "mcpServers": {
-    "mcp-redmine": {
-      "url": "http://127.0.0.1:3100/sse",
-      "headers": {
-        "X-Redmine-Profile": "cursor"
-      }
-    }
-  }
-}
-```
 
 ## テスト
 
@@ -196,6 +216,6 @@ cargo test
 docker compose up -d --build
 ```
 
-## チケット
+## License
 
-Redmine プロジェクト `mcp-redmine`（#196 ほか）。
+MIT（`Cargo.toml` の `license` フィールド参照。リポジトリ直下の `LICENSE` ファイル追加は別途）。

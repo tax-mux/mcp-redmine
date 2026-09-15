@@ -109,7 +109,7 @@ pub fn all_tool_definitions() -> Value {
         },
         {
             "name": TOOL_PROJECTS,
-            "description": "List or get Redmine projects. list returns only id/name/identifier plus total_count (and paging). get returns full project detail. openclaw profile gets a known-project fallback when Redmine returns an empty list.",
+            "description": "List or get Redmine projects. list returns only id/name/identifier plus total_count (and paging). get returns full project detail. Profiles listed in REDMINE_KNOWN_PROJECTS_FILE may receive a configured known-project fallback when Redmine returns an empty list.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

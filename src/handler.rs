@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::api_helpers::ApiErrorContext;
+use crate::api_helpers::{ApiErrorContext, KnownProjectsConfig};
 use crate::error::McpError;
 use crate::keys::KeyStore;
 use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
@@ -27,6 +27,7 @@ pub async fn handle_request(
     req: JsonRpcRequest,
     store: Arc<Mutex<KeyStore>>,
     header_profile: Option<&str>,
+    known_projects: Arc<KnownProjectsConfig>,
 ) -> Option<JsonRpcResponse> {
     if !req.is_valid_version() {
         let id = req.id.clone().unwrap_or(JsonRpcId::Null);
@@ -53,7 +54,9 @@ pub async fn handle_request(
         "initialize" => JsonRpcResponse::ok(id, initialize_result()),
         "ping" => JsonRpcResponse::ok(id, json!({})),
         "tools/list" => JsonRpcResponse::ok(id, json!({ "tools": all_tool_definitions() })),
-        "tools/call" => handle_tool_call(id, req.params, store, header_profile).await,
+        "tools/call" => {
+            handle_tool_call(id, req.params, store, header_profile, known_projects).await
+        }
         _ => JsonRpcResponse::err(id, -32601, &format!("Method not found: {}", req.method)),
     })
 }
@@ -63,11 +66,20 @@ async fn handle_tool_call(
     params: Value,
     store: Arc<Mutex<KeyStore>>,
     header_profile: Option<&str>,
+    known_projects: Arc<KnownProjectsConfig>,
 ) -> JsonRpcResponse {
     let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    let result = match dispatch_tool(tool_name, args, store.clone(), header_profile).await {
+    let result = match dispatch_tool(
+        tool_name,
+        args,
+        store.clone(),
+        header_profile,
+        known_projects,
+    )
+    .await
+    {
         Ok(content) => json!({
             "content": [{
                 "type": "text",

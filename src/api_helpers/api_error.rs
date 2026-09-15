@@ -54,7 +54,7 @@ fn hint_for_status(status: u16, errors: &[String], ctx: &ApiErrorContext) -> Str
     match status {
         403 if path.contains("/projects.json") && method.eq_ignore_ascii_case("GET") => {
             format!(
-                "Profile `{profile}` cannot list projects (Reporter role often returns empty). Use redmine_projects action=list (includes known-project fallback for openclaw), or redmine_issues action=list with query project_id=<id>."
+                "Profile `{profile}` cannot list projects (Reporter role often returns empty). Use redmine_projects action=list (may apply configured known-project fallback), or redmine_issues action=list with query project_id=<id>."
             )
         }
         403 if path.contains("/projects.json") && method.eq_ignore_ascii_case("POST") => {
@@ -99,12 +99,14 @@ mod tests {
     #[test]
     fn structured_403_hint_for_projects() {
         let ctx = ApiErrorContext {
-            profile: Some("openclaw".into()),
+            profile: Some("bot".into()),
             method: Some("GET".into()),
             path: Some("/projects.json".into()),
         };
         let v = structured_api_error(403, "", &ctx);
-        assert!(v["hint"].as_str().unwrap().contains("openclaw"));
+        let hint = v["hint"].as_str().unwrap();
+        assert!(hint.contains("bot"), "{hint}");
+        assert!(hint.contains("known-project fallback"), "{hint}");
     }
        #[test]
      fn relations_422_lists_available_types() {

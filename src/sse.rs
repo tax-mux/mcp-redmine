@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::handler::handle_request;
 use crate::keys::KeyStore;
 use crate::mcp::JsonRpcRequest;
+use crate::api_helpers::KnownProjectsConfig;
 
 type SessionMap = Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>;
 
@@ -33,6 +34,7 @@ pub const PROFILE_HEADER: &str = "x-redmine-profile";
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Mutex<KeyStore>>,
+    pub known_projects: Arc<KnownProjectsConfig>,
     pub sessions: SessionMap,
 }
 
@@ -123,8 +125,13 @@ async fn message_handler(
     };
 
     let profile = header_profile(&headers);
-    if let Some(response) =
-        handle_request(req, state.store.clone(), profile.as_deref()).await
+    if let Some(response) = handle_request(
+        req,
+        state.store.clone(),
+        profile.as_deref(),
+        state.known_projects.clone(),
+    )
+    .await
     {
         match serde_json::to_string(&response) {
             Ok(payload) => {

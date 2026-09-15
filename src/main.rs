@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use mcp_redmine::api_helpers::KnownProjectsConfig;
 use mcp_redmine::keys::KeyStore;
 use mcp_redmine::sse::{router, AppState};
 
@@ -24,6 +25,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Loaded Redmine API key profiles (keys stay in-process)"
     );
 
+    let known_projects = KnownProjectsConfig::from_env()?;
+    tracing::info!(
+        fallback_profiles = known_projects.profile_count(),
+        known_projects = known_projects.project_count(),
+        "Loaded known-project fallback config"
+    );
+
     let port: u16 = std::env::var("MCP_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -33,6 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         store: Arc::new(Mutex::new(store)),
+        known_projects: known_projects.shared(),
         sessions: Arc::new(Mutex::new(Default::default())),
     };
 

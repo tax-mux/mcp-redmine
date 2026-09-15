@@ -5,9 +5,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api_helpers::{
-    coerce_api_body, known_projects_fallback, normalize_issue_api_request,
-    normalize_status_filter_value, projects_list_needs_fallback, resolve_api_method,
-    rails_nested_to_params, validate_issue_list_query, validate_redmine_path,
+    coerce_api_body, normalize_issue_api_request, normalize_status_filter_value,
+    projects_list_needs_fallback, resolve_api_method, rails_nested_to_params,
+    validate_issue_list_query, validate_redmine_path, KnownProjectsConfig,
 };
 use crate::compact::{is_list_collection_get, strip_list_bodies};
 use crate::error::McpError;
@@ -27,6 +27,7 @@ use crate::tools::dispatch_issues::dispatch_issues;
 async fn enrich_current_user(
     client: &RedmineClient,
     profile: Option<&str>,
+    known_projects: &KnownProjectsConfig,
     mut user: Value,
 ) -> Result<Value, McpError> {
     let admin = user
@@ -53,8 +54,8 @@ async fn enrich_current_user(
                 .unwrap_or(0);
             (
                 count > 0,
-                if count == 0 && profile == Some("openclaw") {
-                    Some("GET /projects.json returned empty; use redmine_projects action=list for known-project fallback".to_string())
+                if count == 0 && known_projects.applies_to(profile) {
+                    Some("GET /projects.json returned empty; use redmine_projects action=list for configured known-project fallback".to_string())
                 } else {
                     None
                 },
@@ -86,6 +87,7 @@ async fn enrich_current_user(
 async fn dispatch_projects(
     client: &RedmineClient,
     profile: Option<&str>,
+    known_projects: &KnownProjectsConfig,
     args: &Value,
 ) -> Result<Value, McpError> {
     let action = args
@@ -100,13 +102,15 @@ async fn dispatch_projects(
             q.insert("limit".into(), limit.to_string());
             let mut listed = match client_request(client, profile, "GET", "/projects.json", Some(&q), None).await {
                 Ok(v) => v,
-                Err(McpError::Api { status, .. }) if status == 403 && profile == Some("openclaw") => {
-                    return Ok(known_projects_fallback());
+                Err(McpError::Api { status, .. })
+                    if status == 403 && known_projects.applies_to(profile) =>
+                {
+                    return Ok(known_projects.as_list_payload());
                 }
                 Err(e) => return Err(e),
             };
-            if projects_list_needs_fallback(&listed, profile) {
-                listed = known_projects_fallback();
+            if projects_list_needs_fallback(&listed, profile, known_projects) {
+                listed = known_projects.as_list_payload();
             } else {
                 strip_list_bodies(&mut listed);
             }
@@ -185,6 +189,7 @@ pub async fn dispatch_tool(
     args: Value,
     store: Arc<Mutex<KeyStore>>,
     header_profile: Option<&str>,
+    known_projects: Arc<KnownProjectsConfig>,
 ) -> Result<Value, McpError> {
     reject_credential_args(&args)?;
 
@@ -227,9 +232,11 @@ pub async fn dispatch_tool(
     let mut result = match name {
         TOOL_CURRENT_USER => {
             let user = client_request(&client, profile_ref, "GET", "/users/current.json", None, None).await?;
-            enrich_current_user(&client, profile_ref, user).await?
+            enrich_current_user(&client, profile_ref, known_projects.as_ref(), user).await?
         }
-        TOOL_PROJECTS => dispatch_projects(&client, profile_ref, &args).await?,
+        TOOL_PROJECTS => {
+            dispatch_projects(&client, profile_ref, known_projects.as_ref(), &args).await?
+        }
         TOOL_METADATA => dispatch_metadata(&client, profile_ref, &args).await?,
         TOOL_ISSUES => dispatch_issues(&client, profile_ref, &args).await?,
         TOOL_API_REQUEST => {
@@ -273,9 +280,9 @@ pub async fn dispatch_tool(
             if is_list_collection_get(&method, &path) {
                 strip_list_bodies(&mut response);
                 if path.contains("/projects.json")
-                    && projects_list_needs_fallback(&response, profile_ref)
+                    && projects_list_needs_fallback(&response, profile_ref, known_projects.as_ref())
                 {
-                    response = known_projects_fallback();
+                    response = known_projects.as_list_payload();
                 }
             }
             response
@@ -400,6 +407,10 @@ mod tests {
         ))
     }
 
+    fn empty_known() -> Arc<KnownProjectsConfig> {
+        KnownProjectsConfig::default().shared()
+    }
+
     #[test]
     fn tool_schemas_have_no_credential_fields() {
         let tools = all_tool_definitions();
@@ -438,7 +449,7 @@ mod tests {
             .unwrap();
         let store = test_store();
         let out = rt
-            .block_on(dispatch_tool(TOOL_LIST_PROFILES, json!({}), store, None))
+            .block_on(dispatch_tool(TOOL_LIST_PROFILES, json!({}), store, None, empty_known()))
             .unwrap();
         let text = out.to_string();
         assert!(text.contains("alice"));
@@ -459,6 +470,7 @@ mod tests {
             json!({"api_key": "attacker-supplied"}),
             store.clone(),
             None,
+            empty_known(),
         ));
         assert!(err.is_err());
         let guard = rt.block_on(store.lock());
@@ -480,6 +492,7 @@ mod tests {
             json!({"method": "GET", "path": "/home/node/.openclaw/openclaw.json"}),
             store.clone(),
             Some("alice"),
+            empty_known(),
         ));
         assert!(err.is_err());
     }
@@ -496,6 +509,7 @@ mod tests {
             json!({"action": "delete", "issue_id": "1"}),
             store.clone(),
             Some("alice"),
+            empty_known(),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
@@ -518,6 +532,7 @@ mod tests {
             }),
             store.clone(),
             Some("alice"),
+            empty_known(),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
@@ -537,6 +552,7 @@ mod tests {
             json!({"path": "/issues/1/journals.json"}),
             store.clone(),
             Some("alice"),
+            empty_known(),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
@@ -555,6 +571,7 @@ mod tests {
             json!({}),
             store.clone(),
             Some("nope"),
+            empty_known(),
         ));
         assert!(err.is_err());
         let guard = rt.block_on(store.lock());
@@ -575,6 +592,7 @@ mod tests {
             json!({"profile": "alice"}),
             store.clone(),
             Some("alice"),
+            empty_known(),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);
@@ -593,6 +611,7 @@ mod tests {
             json!({}),
             store.clone(),
             None,
+            empty_known(),
         ));
         let guard = rt.block_on(store.lock());
         let msg = safe_error_text(&err.unwrap_err(), &guard);

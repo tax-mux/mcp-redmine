@@ -59,6 +59,7 @@ fn compose_publishes_sse_port_without_inline_key() {
     );
     assert!(!text.contains("REDMINE_API_KEY="));
     assert!(!text.contains("REDMINE_API_KEYS="));
+    assert!(text.contains("REDMINE_KNOWN_PROJECTS_FILE"));
     assert!(!text.contains("stdin_open"));
 }
 
@@ -77,6 +78,7 @@ fn env_example_documents_multi_profile() {
     let text = std::fs::read_to_string(path).expect(".env.example");
     assert!(text.contains("REDMINE_API_KEYS"));
     assert!(text.contains("REDMINE_API_KEYS_FILE"));
+    assert!(text.contains("REDMINE_KNOWN_PROJECTS_FILE"));
     assert!(text.contains("REDMINE_PROFILE"));
     assert!(text.contains("never put in mcp.json"));
 }
@@ -93,5 +95,9 @@ fn readme_documents_multi_profile_without_client_keys() {
     assert!(
         text.contains("原則禁止") || text.contains("X-Redmine-Profile"),
         "README should document header-only identity policy"
+    );
+    assert!(
+        text.contains("REDMINE_KNOWN_PROJECTS_FILE"),
+        "README should document known-project fallback file"
     );
 }
