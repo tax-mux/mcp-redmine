@@ -113,8 +113,9 @@ REDMINE_API_KEYS_FILE=/secrets/redmine-keys.json
 |----------------|----------|------|
 | `default` | ホスト既定（多くの場合 admin 相当） | コンテナ `REDMINE_PROFILE` の既定 |
 | `admin` / `takahiro` | 管理者操作・ステータス変更 | 権限が必要な更新向き |
-| `opencode` | OpenCode / 一部 pi 設定 | admin フラグ付きのことが多い |
+| `opencode` | OpenCode | admin フラグ付きのことが多い |
 | `cursor` | Cursor エージェント | プロジェクト一覧は可。admin ではない |
+| `pi` | pi-agent | Developer。`X-Redmine-Profile: pi` |
 | `openclaw` | Reporter 系 bot | `/projects.json` が空になりやすい → `redmine_projects` の fallback を使う |
 
 `redmine_current_user` の `capabilities` で admin / can_list_projects を確認する。

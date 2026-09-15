@@ -74,6 +74,11 @@ fn hint_for_status(status: u16, errors: &[String], ctx: &ApiErrorContext) -> Str
         422 if errors.iter().any(|e| e.contains("プロジェクト")) => {
             "Validation failed: project missing. Pass project_id (numeric id or identifier string) to redmine_issues action=create.".into()
         }
+         422 if path.contains("/relations") => {
+              let msgs = errors.join("; ");
+              let hint = format!("Relation type validation failed on {method} {path}. Standard Redmine types: precedes, precedes_reverse, relates, blocks. Note: precedes_reverse is reverse of precedes. Project may restrict a subset; check project settings in UI. Errors: {}", msgs);
+              hint
+             },
         422 => format!(
             "Redmine rejected the request ({method} {path}). Prefer redmine_issues action=create/update with flat args. Errors: {}",
             errors.join("; ")
@@ -101,4 +106,16 @@ mod tests {
         let v = structured_api_error(403, "", &ctx);
         assert!(v["hint"].as_str().unwrap().contains("openclaw"));
     }
-}
+       #[test]
+     fn relations_422_lists_available_types() {
+        let ctx = ApiErrorContext {
+            profile: Some("default".into()),
+            method: Some("POST".into()),
+             path: Some("/issues/1/relations.json".into()),
+        };
+        let v = structured_api_error(422, "", &ctx);
+        let hint = v["hint"].as_str().unwrap();
+        assert!(hint.contains("precedes"), "should list precedes: {}", hint);
+        assert!(hint.contains("blocks"), "should list blocks: {}", hint);
+     }
+    }

@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use crate::api_helpers::{
     coerce_api_body, known_projects_fallback, normalize_issue_api_request,
     normalize_status_filter_value, projects_list_needs_fallback, resolve_api_method,
-    validate_issue_list_query, validate_redmine_path,
+    rails_nested_to_params, validate_issue_list_query, validate_redmine_path,
 };
 use crate::compact::{is_list_collection_get, strip_list_bodies};
 use crate::error::McpError;
@@ -247,8 +247,19 @@ pub async fn dispatch_tool(
                 validate_issue_list_query(&q)?;
             }
             let coerced = coerce_api_body(args.get("body"));
-            let body =
-                normalize_issue_api_request(&path, &method, coerced.as_ref(), &mut q);
+            // Nested form params such as relation[issue_to_id]=... are read by Rails from the
+            // query/form, not from a JSON body. The /relations endpoint does not call parse_json,
+            // so expand nested body/query objects to bracket notation instead of sending JSON
+            // (which leaves params[:relation] nil and 500s). JSON-native endpoints
+            // (/issues.json, /issues/:id.json keep passing a JSON body).
+            let body = if path.contains("/relations") {
+                if let Some(b) = &coerced {
+                    q.extend(rails_nested_to_params(b));
+               }
+                None
+            } else {
+                normalize_issue_api_request(&path, &method, coerced.as_ref(), &mut q)
+            };
             let q_ref = if q.is_empty() { None } else { Some(q) };
             let mut response = client_request(
                 &client,

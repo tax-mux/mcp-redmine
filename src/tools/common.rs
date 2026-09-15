@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::api_helpers::ApiErrorContext;
+use crate::api_helpers::{flatten_rails_nested, ApiErrorContext};
 use crate::error::{McpError, RedmineError};
 use crate::keys::KeyStore;
 use crate::redmine::RedmineClient;
@@ -20,14 +20,22 @@ pub(crate) fn query_map(value: Option<&Value>) -> Option<HashMap<String, String>
     let obj = value?.as_object()?;
     let mut map = HashMap::new();
     for (k, v) in obj {
-        let s = match v {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            other => other.to_string(),
-        };
-        map.insert(k.clone(), s);
-    }
+        match v {
+               // Nested objects/arrays become Rails bracket params (e.g. relation[issue_to_id]=...).
+               // A JSON-string encoding of a nested value would 500 on the server side.
+            Value::Object(_) | Value::Array(_) => flatten_rails_nested(v, Some(k), &mut map),
+            other => {
+                let s = match other {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => continue,
+                        _ => continue,
+                   };
+                map.insert(k.clone(), s);
+                 }
+             }
+     }
     Some(map)
 }
 

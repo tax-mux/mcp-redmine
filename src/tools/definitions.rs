@@ -100,6 +100,7 @@ pub fn all_tool_definitions() -> Value {
                         "description": "Attachment IDs to delete (action=update only). Executed as DELETE /attachments/{id} after the issue update succeeds."
                     },
                     "done_ratio": { "type": "integer", "description": "Progress 0-100. Set while status is New/In Progress; after Resolved (3) Redmine may freeze it. Parent aggregation depends on child closed status." },
+                     "parent_id": { "type": "integer", "description": "Parent issue id (Redmine REST field is parent_id; the clearer alias parent_issue_id is also accepted and normalized). Set it on create/update so the issue has a parent. In Redmine a parent is only honored at create time; post-hoc parent does not work -- always pass parent_id when creating a child." },
                     "profile": profile_property()
                 },
                 "required": ["action"],

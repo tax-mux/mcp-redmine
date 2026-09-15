@@ -13,6 +13,101 @@ fn is_issue_update_path(path: &str) -> bool {
     bare.starts_with("/issues/") && bare.ends_with(".json")
 }
 
+/// True when the endpoint parses a JSON body natively (Redmine `parse_json` in the IssueController).
+///
+/// `POST /issues.json` and `PUT/PATCH /issues/:id.json` accept a JSON body. Every other endpoint
+/// (e.g. `/issues/:id/relations.json`) reads nested params from the form/query side, so a nested
+/// JSON body must be expanded to bracket-notation params instead of being sent as JSON.
+pub fn is_json_native_path(path: &str, method: &str) -> bool {
+    let m = method.to_ascii_uppercase();
+    let bare = path.split('?').next().unwrap_or(path).trim_end_matches('/');
+    if m == "POST" && (bare == "/issues.json" || bare == "issues.json") {
+        return true;
+      }
+    if m == "PUT" || m == "PATCH" {
+        return is_issue_update_path(path);
+      }
+    false
+}
+
+/// Recursively flatten a Rails-style nested JSON value into bracket-notation form params:
+/// `parent[child]=value`; arrays become `parent[]=value` (repeated per element).
+///
+/// A value passed with no `prefix` (top level) is handled by [`rails_nested_to_params`].
+pub fn flatten_rails_nested(value: &Value, prefix: Option<&str>, out: &mut std::collections::HashMap<String, String>) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map {
+                let key = match prefix {
+                    Some(p) => format!("{p}[{k}]"),
+                    None => k.clone(),
+                 };
+                flatten_rails_nested(v, Some(&key), out);
+              }
+          }
+        Value::Array(arr) => {
+            let key = match prefix {
+                Some(p) => format!("{p}[]"),
+                None => "[]".to_string(),
+              };
+            for v in arr {
+                flatten_rails_nested(v, Some(&key), out);
+              }
+          }
+        Value::Null => {}
+        Value::String(s) => {
+            if let Some(p) = prefix {
+                out.insert(p.to_string(), s.clone());
+              }
+          }
+        Value::Number(n) => {
+            if let Some(p) = prefix {
+                out.insert(p.to_string(), n.to_string());
+              }
+          }
+        Value::Bool(b) => {
+            if let Some(p) = prefix {
+                out.insert(p.to_string(), b.to_string());
+              }
+          }
+      }
+}
+
+/// Flatten a top-level JSON object into bracket-notation params.
+///
+/// - Nested objects/arrays: expanded to `key[child]=value` / `key[]=value`.
+/// - Leaf values at the top level: kept as a plain `key=value` entry.
+///
+/// This is the exact form Rails accepts for `relation[...]` / `issue[...]` nested params, which
+/// (unlike a JSON body) reaches `params[:relation]` on controllers such as IssueRelationsController.
+pub fn rails_nested_to_params(value: &Value) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    if let Value::Object(map) = value {
+        for (k, v) in map {
+            match v {
+                Value::Object(_) | Value::Array(_) => flatten_rails_nested(v, Some(k), &mut out),
+                Value::Null => {}
+                Value::String(s) => {
+                    out.insert(k.clone(), s.clone());
+                 }
+                Value::Number(n) => {
+                    out.insert(k.clone(), n.to_string());
+                  }
+                Value::Bool(b) => {
+                    out.insert(k.clone(), b.to_string());
+                   }
+             }
+         }
+     }
+    out
+}
+
+/// True when the top level of `value` contains a nested object or array that must be expanded to
+/// bracket notation rather than sent as a JSON body.
+pub fn has_nested_rails_params(value: &Value) -> bool {
+    matches!(value, Value::Object(map) if map.values().any(|v| matches!(v, Value::Object(_) | Value::Array(_))))
+}
+
 /// Parse api_request body when agents stringify JSON.
 pub fn coerce_api_body(body: Option<&Value>) -> Option<Value> {
     let Some(body) = body else {
@@ -300,4 +395,39 @@ mod tests {
         let out = coerce_api_body(Some(&raw)).unwrap();
         assert_eq!(out["notes"], "x");
     }
+
+    #[test]
+    fn rails_nested_to_params_expands_relation_wrapper() {
+        let body = json!({"relation": {"issue_to_id": 756, "relation_type": "precedes"}});
+        let out = rails_nested_to_params(&body);
+        assert_eq!(out.get("relation[issue_to_id]").map(String::as_str), Some("756"));
+        assert_eq!(
+            out.get("relation[relation_type]").map(String::as_str),
+            Some("precedes")
+          );
+      }
+
+    #[test]
+    fn rails_nested_to_params_keeps_leaves_flat() {
+        let body = json!({"project_id": 3, "subject": "x"});
+        let out = rails_nested_to_params(&body);
+        assert_eq!(out.get("project_id").map(String::as_str), Some("3"));
+        assert_eq!(out.get("subject").map(String::as_str), Some("x"));
+      }
+
+    #[test]
+    fn is_json_native_path_detects_issue_endpoints() {
+        assert!(is_json_native_path("/issues.json", "POST"));
+        assert!(is_json_native_path("/issues/42.json", "PUT"));
+        assert!(!is_json_native_path("/issues/42/relations.json", "POST"));
+        assert!(!is_json_native_path("/projects.json", "POST"));
+      }
+
+    #[test]
+    fn has_nested_rails_params_flags_nested_only() {
+        assert!(has_nested_rails_params(&json!({"relation": {"issue_to_id": 1}})));
+        assert!(!has_nested_rails_params(&json!({"subject": "x"})));
+        assert!(!has_nested_rails_params(&json!(null)));
+      }
+
 }
