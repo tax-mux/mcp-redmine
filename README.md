@@ -216,6 +216,19 @@ cargo test
 docker compose up -d --build
 ```
 
+## バージョニング
+
+- **正本**: `Cargo.toml` の `version`（SemVer）
+- `/health` と MCP `initialize.serverInfo.version` はどちらも `CARGO_PKG_VERSION` を返す
+- 変更履歴: [CHANGELOG.md](CHANGELOG.md)
+
+リリース手順:
+
+1. `CHANGELOG.md` に節を追加する
+2. `Cargo.toml` の `version` を上げる
+3. コミットする
+4. `git tag -a vX.Y.Z -m "vX.Y.Z"` して push（`git push --tags`）
+
 ## License
 
 MIT（`Cargo.toml` の `license` フィールド参照。リポジトリ直下の `LICENSE` ファイル追加は別途）。

@@ -17,7 +17,7 @@ pub fn initialize_result() -> Value {
         },
         "serverInfo": {
             "name": "mcp-redmine",
-            "version": "0.2.0"
+            "version": env!("CARGO_PKG_VERSION")
         },
         "instructions": PROFILE_POLICY_MSG
     })
@@ -114,4 +114,19 @@ pub fn load_config() -> Result<(String, String), McpError> {
         McpError::Internal("REDMINE_URL is not set (inject via container env_file)".into())
     })?;
     Ok((url, key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_server_info_version_matches_cargo() {
+        let init = initialize_result();
+        let version = init
+            .pointer("/serverInfo/version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    }
 }
