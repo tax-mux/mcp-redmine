@@ -231,4 +231,4 @@ docker compose up -d --build
 
 ## License
 
-MIT（`Cargo.toml` の `license` フィールド参照。リポジトリ直下の `LICENSE` ファイル追加は別途）。
+MIT — see [LICENSE](LICENSE).

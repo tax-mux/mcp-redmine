@@ -110,14 +110,14 @@ mod tests {
         let mut v = json!({
             "user": {
                 "id": 5,
-                "login": "takahiro",
+                "login": "alice",
                 "api_key": "super-secret-key-should-not-leak",
                 "mail": "a@example.com"
             }
         });
         strip_secret_fields(&mut v);
         assert!(v["user"].get("api_key").is_none());
-        assert_eq!(v["user"]["login"], "takahiro");
+        assert_eq!(v["user"]["login"], "alice");
         let s = v.to_string();
         assert!(!s.contains("super-secret-key-should-not-leak"));
     }

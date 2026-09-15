@@ -94,7 +94,7 @@ mod resolve_session_profile_tests {
 
     #[test]
     fn tool_arg_rejected_even_with_header() {
-        let err = resolve_session_profile(&json!({"profile": "takahiro"}), Some("cursor")).unwrap_err();
+        let err = resolve_session_profile(&json!({"profile": "bob"}), Some("cursor")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("原則的に禁止") || msg.contains("principally forbidden"), "{msg}");
     }
