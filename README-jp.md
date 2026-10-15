@@ -157,9 +157,15 @@ API キーは `mcp.json` に書かない。プロファイル名だけヘッダ�
 | `redmine_wiki` | wiki ページの list / get / create / update / delete |
 | `redmine_api_request` | 任意 REST パス（パス検証・issue POST 自動ラップ）。relations: `POST /issues/{id}/relations.json` |
 
+### status_id（create / update）
+
+- `redmine_issues` の create/update では **数値 ID のみ**（例: `2`, `7`）。`"進行中"` / `"review"` などの**名前指定は拒否**し、`redmine_metadata` `kind: "issue_statuses"` を使うようエラーで示す。
+- 数字だけの文字列（例: `"7"`）は整数に変換して許可する。
+- **list フィルタ**だけは `open` / `closed` / `review` / `レビュー` などのエイリアスを正規化してよい（query 専用）。実 ID は必ず metadata で確認する（環境ごとに異なる）。
+
 ### done_ratio（進捗率）の順序
 
-1. **先に** `done_ratio` を更新する（status は新規 / 進行中のまま）
+1. **先に** `done_ratio` を更新する（status はオープンのまま: 新規 / 進行中 / レビュー）
 2. **その後** 解決ステータスにする
 3. 解決後に rate だけ変えると凍結されて効かないことが多い
 4. 親の自動集計は子のクローズ状態に依存する（環境設定次第）

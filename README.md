@@ -157,9 +157,15 @@ Do not put API keys in `mcp.json`. Send only the profile name in a header:
 | `redmine_wiki` | wiki page list / get / create / update / delete |
 | `redmine_api_request` | Any REST path (path validation; issue POST auto-wrap). Relations: `POST /issues/{id}/relations.json` |
 
+### `status_id` (create / update)
+
+- **Numeric ids only** on `redmine_issues` create/update (e.g. `2`, `7`). Names like `"In Progress"` / `"review"` / `"進行中"` are **rejected** with an error that points at `redmine_metadata` `kind: "issue_statuses"`.
+- Digit-only strings (e.g. `"7"`) are accepted and coerced to integers.
+- **List filters** may still use aliases such as `open` / `closed` / `review` / `レビュー` (normalized for query only). Confirm real ids with metadata — they differ per Redmine instance.
+
 ### `done_ratio` order
 
-1. Update `done_ratio` **first** (status stays New / In Progress)
+1. Update `done_ratio` **first** while status is still open (New / In Progress / Review)
 2. Then move to Resolved
 3. Changing only the ratio after resolve often freezes and has no effect
 4. Parent auto-aggregation depends on child closed state (instance settings)
