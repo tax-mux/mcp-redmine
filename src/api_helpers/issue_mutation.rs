@@ -74,6 +74,36 @@ fn normalize_parent_dual(args: &Value) -> Value {
      }
 }
 
+/// Create/update の `status_id` は数値のみ。名前（「進行中」「review」等）は拒否する。
+/// digit-only 文字列（`"7"`）は整数へ正規化する。list フィルタの名前正規化とは別経路。
+pub fn coerce_numeric_status_id(raw: &Value) -> Result<Value, McpError> {
+    const HINT: &str = "status_id must be a numeric Redmine status id (e.g. 2, 3, 7). Do not pass names like \"進行中\" / \"review\" / \"resolved\". Call redmine_metadata kind=\"issue_statuses\" first. Name aliases are only for list query filters.";
+
+    match raw {
+        Value::Number(n) => {
+            if n.as_u64().is_some() || n.as_i64().is_some() {
+                Ok(Value::Number(n.clone()))
+            } else {
+                Err(McpError::InvalidArgs(HINT.into()))
+            }
+        }
+        Value::String(s) => {
+            let t = s.trim();
+            if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) {
+                let n: u64 = t.parse().map_err(|_| McpError::InvalidArgs(HINT.into()))?;
+                Ok(json!(n))
+            } else {
+                Err(McpError::InvalidArgs(format!(
+                    "{HINT} (got status_id name/string {s:?})"
+                )))
+            }
+        }
+        _ => Err(McpError::InvalidArgs(format!(
+            "{HINT} (got non-numeric status_id {raw})"
+        ))),
+    }
+}
+
 /// Build `{issue: {...}}` body from flat tool arguments (create = required core fields, update = partial).
 /// Accepts nested `issue` object/string and flattens it first.
 pub fn issue_body_from_args(args: &Value, for_create: bool) -> Result<Value, McpError> {
@@ -93,7 +123,9 @@ pub fn issue_body_from_args(args: &Value, for_create: bool) -> Result<Value, Mcp
              .get("description")
              .and_then(|v| v.as_str())
              .ok_or_else(|| McpError::InvalidArgs("description is required for create".into()))?;
-        let status_id = args.get("status_id").cloned().unwrap_or(json!(1));
+        let status_id = coerce_numeric_status_id(
+            args.get("status_id").unwrap_or(&json!(1)),
+        )?;
 
         let mut issue = json!({
              "project_id": project_id,
@@ -125,7 +157,11 @@ pub fn issue_body_from_args(args: &Value, for_create: bool) -> Result<Value, Mcp
          "notes",
      ] {
         if let Some(v) = args.get(key) {
-            map.insert(key.to_string(), v.clone());
+            if key == "status_id" {
+                map.insert(key.to_string(), coerce_numeric_status_id(v)?);
+            } else {
+                map.insert(key.to_string(), v.clone());
+            }
          }
      }
     if map.is_empty() {
@@ -392,4 +428,52 @@ mod tests {
         let out = issue_mutation_ack("update", Some("10"), 204, Value::Null, &req);
         assert!(out.get("warnings").is_none(), "no warnings for normal update");
      }
+
+    #[test]
+    fn rejects_status_id_name_on_update() {
+        let args = json!({
+            "action": "update",
+            "issue_id": "1",
+            "status_id": "進行中",
+            "notes": "x"
+        });
+        let err = issue_body_from_args(&args, false).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("numeric"), "{msg}");
+        assert!(msg.contains("issue_statuses") || msg.contains("metadata"), "{msg}");
+        assert!(msg.contains("進行中"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_status_id_review_name_on_create() {
+        let args = json!({
+            "action": "create",
+            "project_id": "mcp-redmine",
+            "tracker_id": 2,
+            "status_id": "review",
+            "subject": "x",
+            "description": "d"
+        });
+        let err = issue_body_from_args(&args, true).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("numeric") || msg.contains("Do not pass names"), "{msg}");
+    }
+
+    #[test]
+    fn accepts_digit_only_string_status_id() {
+        let args = json!({
+            "action": "update",
+            "issue_id": "1",
+            "status_id": "7",
+            "notes": "to review"
+        });
+        let out = issue_body_from_args(&args, false).unwrap();
+        assert_eq!(out["issue"]["status_id"], json!(7));
+    }
+
+    #[test]
+    fn accepts_numeric_status_id() {
+        assert_eq!(coerce_numeric_status_id(&json!(2)).unwrap(), json!(2));
+        assert_eq!(coerce_numeric_status_id(&json!(7)).unwrap(), json!(7));
+    }
     }

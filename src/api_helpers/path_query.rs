@@ -203,6 +203,8 @@ pub fn normalize_status_filter_value(raw: &str) -> String {
         "feedback" => "4".into(),
         "closed_status" | "done" => "5".into(),
         "rejected" => "6".into(),
+        // レビュー（LLM 実装評価待ち）。本環境の issue_statuses id=7（#1514）。metadata で再確認すること。
+        "review" | "in_review" | "in-review" => "7".into(),
         _ => match t {
             "新規" => "1".into(),
             "進行中" => "2".into(),
@@ -210,6 +212,7 @@ pub fn normalize_status_filter_value(raw: &str) -> String {
             "フィードバック" => "4".into(),
             "終了" => "5".into(),
             "却下" => "6".into(),
+            "レビュー" => "7".into(),
             _ => t.to_string(),
         },
     }
@@ -250,6 +253,16 @@ mod tests {
         assert_eq!(normalize_status_filter_value("resolved"), "3");
         assert_eq!(normalize_status_filter_value("open"), "open");
         assert_eq!(normalize_status_filter_value("1,resolved"), "1,3");
+    }
+
+    #[test]
+    fn normalizes_review_status_name() {
+        assert_eq!(normalize_status_filter_value("review"), "7");
+        assert_eq!(normalize_status_filter_value("in_review"), "7");
+        assert_eq!(normalize_status_filter_value("レビュー"), "7");
+        assert_eq!(normalize_status_filter_value("2,review"), "2,7");
+        // unknown names stay as-is
+        assert_eq!(normalize_status_filter_value("unknown_status"), "unknown_status");
     }
 
     #[test]

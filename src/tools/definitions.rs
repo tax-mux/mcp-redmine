@@ -59,7 +59,7 @@ pub fn all_tool_definitions() -> Value {
         },
         {
             "name": TOOL_ISSUES,
-            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on) and sets description_omitted=true (body via get). create/update accept flat args or nested issue object/JSON string; MCP wraps {issue:{...}}. create/update always return ok ACK (ok/action/issue_id/http_status/changed) even when Redmine body is empty (204). For journals use notes on update (not description). done_ratio: set while status is New/In Progress, then resolve (status_id=3); after Resolved, done_ratio often freezes. Never pass credentials as arguments.",
+            "description": "Manage Redmine issues: list, get, create, or update. list returns compact metadata (id/subject/status/project/updated_on) and sets description_omitted=true (body via get). create/update accept flat args or nested issue object/JSON string; MCP wraps {issue:{...}}. create/update always return ok ACK (ok/action/issue_id/http_status/changed) even when Redmine body is empty (204). For journals use notes on update (not description). done_ratio: set while status is New/In Progress/Review, then resolve (status_id=3); after Resolved, done_ratio often freezes. create/update status_id must be numeric (names rejected); list filters may use review/レビュー→7. Confirm ids via metadata. Never pass credentials as arguments.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -85,7 +85,7 @@ pub fn all_tool_definitions() -> Value {
                     "limit": { "type": "integer", "description": "Page size for list (default 25)" },
                     "project_id": { "type": "string", "description": "Project ID or identifier. Required for create. Also valid as a list filter inside query: {\"query\": {\"project_id\": 3}} to list only that project's issues." },
                     "tracker_id": { "type": "integer", "description": "Tracker ID (required for create)" },
-                    "status_id": { "type": "integer", "description": "Status ID (required for create, optional for update). Prefer numeric ids from redmine_metadata. Set done_ratio before moving to Resolved (3)." },
+                    "status_id": { "type": "integer", "description": "Numeric Redmine status id only (required for create, optional for update). Names like 進行中/review are rejected — use redmine_metadata kind=issue_statuses. Set done_ratio before moving to Resolved (3)." },
                     "subject": { "type": "string", "description": "Issue subject (required for create)" },
                     "description": { "type": "string", "description": "Issue description body (required for create; overwrites body on update)" },
                     "notes": { "type": "string", "description": "Journal note for update (does not replace description)" },
@@ -99,7 +99,7 @@ pub fn all_tool_definitions() -> Value {
                         "items": { "type": "integer" },
                         "description": "Attachment IDs to delete (action=update only). Executed as DELETE /attachments/{id} after the issue update succeeds."
                     },
-                    "done_ratio": { "type": "integer", "description": "Progress 0-100. Set while status is New/In Progress; after Resolved (3) Redmine may freeze it. Parent aggregation depends on child closed status." },
+                    "done_ratio": { "type": "integer", "description": "Progress 0-100. Set while status is New/In Progress/Review; after Resolved (3) Redmine may freeze it. Parent aggregation depends on child closed status." },
                      "parent_id": { "type": "integer", "description": "Parent issue id (Redmine REST field is parent_id; the clearer alias parent_issue_id is also accepted and normalized). Set it on create/update so the issue has a parent. In Redmine a parent is only honored at create time; post-hoc parent does not work -- always pass parent_id when creating a child." },
                     "profile": profile_property()
                 },
